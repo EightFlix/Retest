@@ -10,7 +10,7 @@ from database.ia_filterdb import get_search_results
 from utils import get_settings, get_size, is_premium, get_shortlink, get_readable_time, temp
 from .metadata import get_imdb_metadata, get_file_list_string, send_metadata_reply
 
-# इन-मेमोरी स्टोरेज (सिर्फ बैकअप के लिए)
+# इन-मेमोरी स्टोरेज
 BUTTONS = {}
 
 @Client.on_message(filters.text & filters.incoming & (filters.group | filters.private))
@@ -46,27 +46,27 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
 
     req = message.from_user.id if message.from_user else 0
     is_prm = await is_premium(req, client)
-    
-    # "Old Request" एरर से बचने के लिए सर्च क्वेरी को छोटा करें
     short_search = search[:25] 
     
     btn = []
     files_link = ""
 
-    # ✅ लिंक मोड फिक्स: स्क्रीनशॉट के अनुसार फाइल लिस्ट जनरेट करना
+    # ✅ फाइल लिस्ट जनरेट करना
     if settings['links']:
         files_link = get_file_list_string(files, message.chat.id, offset=offset+1)
     
-    # ✅ बटन मोड: अगर लिंक मोड ऑफ है, तभी फाइल बटन्स दिखाएं
+    # ✅ बटन मोड
     if not settings['links']:
         for file in files:
+            # फाइल नाम से कचरा (h4hBYE>) साफ करना
+            clean_name = re.sub(r'^[a-zA-Z0-9]+>', '', file['file_name']).strip()
             if is_prm:
-                btn.append([InlineKeyboardButton(f"[{get_size(file['file_size'])}] {file['file_name']}", callback_data=f"file#{file['_id']}")])
+                btn.append([InlineKeyboardButton(f"[{get_size(file['file_size'])}] {clean_name}", callback_data=f"file#{file['_id']}")])
             else:
                 f_link = await get_shortlink(settings['url'], settings['api'], f"https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{file['_id']}")
-                btn.append([InlineKeyboardButton(f"⚡ [{get_size(file['file_size'])}] {file['file_name']}", url=f_link)])
+                btn.append([InlineKeyboardButton(f"⚡ [{get_size(file['file_size'])}] {clean_name}", url=f_link)])
 
-    # ✅ पेजिनेशन बटन्स (Back/Next)
+    # ✅ पेजिनेशन बटन्स
     pagination_row = []
     if offset != 0:
         pagination_row.append(InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"next_{req}_{int(offset)-MAX_BTN}_{short_search}"))
@@ -78,7 +78,6 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
     
     btn.append(pagination_row)
     
-    # ✅ लैंग्वेज और क्वालिटी मेनू बटन्स
     btn.insert(0, [
         InlineKeyboardButton("🌐 ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"filter_menu#lang#{req}#{offset}#{short_search}"),
         InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"filter_menu#qual#{req}#{offset}#{short_search}")
@@ -87,24 +86,25 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
     if not is_prm:
         btn.append([InlineKeyboardButton('🤑 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ', url=f"https://t.me/{temp.U_NAME}?start=premium")])
 
-    cap, poster = await get_imdb_metadata(search, files, settings)
+    # ✅ स्पीड फिक्स: अगर पेज बदल रहे हैं (is_edit), तो IMDb दोबारा लोड न करें
+    if is_edit:
+        cap = f"<b>💭 ʜᴇʏ,\n♻️ ʜᴇʀᴇ ɪ ꜰᴏᴜɴᴅ ꜰᴏʀ ʏᴏᴜʀ sᴇᴀʀᴄʜ {search}...</b>"
+        poster = None
+    else:
+        cap, poster = await get_imdb_metadata(search, files, settings)
     
-    # केप्शन के साथ फाइल लिस्ट जोड़ना (यही मुख्य फिक्स है)
     full_caption = cap + (files_link if files_link else "")
 
     if is_edit:
         try:
-            if poster and poster != "https://telegra.ph/file/default_poster.jpg":
-                await reply_msg.edit_media(media=InputMediaPhoto(poster, caption=full_caption[:1024]), reply_markup=InlineKeyboardMarkup(btn))
-            else:
-                await reply_msg.edit_text(text=full_caption[:4096], reply_markup=InlineKeyboardMarkup(btn))
+            # edit_text ज्यादा तेज काम करता है
+            await reply_msg.edit_text(text=full_caption[:4096], reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True)
         except: pass
     else:
-        # ✅ metadata.py का उपयोग करके मैसेज भेजना
         await send_metadata_reply(message, cap, poster, InlineKeyboardMarkup(btn), settings, files_link)
         await reply_msg.delete()
 
-# --- CALLBACK HANDLERS (बटनों के लिए) ---
+# --- CALLBACK HANDLERS ---
 
 @Client.on_callback_query(filters.regex(r"^filter_menu"))
 async def filter_selection_handler(client, query):
@@ -127,6 +127,7 @@ async def filter_selection_handler(client, query):
 async def apply_filter_handler(client, query):
     _, choice, search, offset, req = query.data.split("#")
     await query.answer(f"Applying: {choice}")
+    # यहाँ भी is_edit=True रखें ताकि पोस्टर दोबारा लोड न हो
     await auto_filter(client, query.message.reply_to_message, query.message, f"{search} {choice}", offset=0, is_edit=True)
 
 @Client.on_callback_query(filters.regex(r"^next"))
