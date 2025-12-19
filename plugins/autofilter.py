@@ -10,7 +10,7 @@ from database.ia_filterdb import get_search_results
 from utils import get_settings, get_size, is_premium, get_shortlink, get_readable_time, temp
 from .metadata import get_imdb_metadata, get_file_list_string, send_metadata_reply
 
-# इन-मेमोरी स्टोरेज
+# इन-मेमोरी स्टोरेज (Stability के लिए इसे बना रहने दें)
 BUTTONS = {}
 
 @Client.on_message(filters.text & filters.incoming & (filters.group | filters.private))
@@ -23,6 +23,7 @@ async def filter_handler(client, message):
     
     if message.chat.type == enums.ChatType.PRIVATE:
         if user_id not in ADMINS and not is_prm:
+            # डेटाबेस से कॉन्फ़िगरेशन चेक करें
             pm_search_all = await db.get_config('PM_SEARCH_FOR_ALL')
             if not pm_search_all:
                 return await message.reply_text("<b>❌ ᴘᴍ sᴇᴀʀᴄʜ ᴅɪsᴀʙʟᴇᴅ</b>\n\nप्रीमियम यूजर्स ही PM में सर्च कर सकते हैं।")
@@ -47,15 +48,15 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
     req = message.from_user.id if message.from_user else 0
     is_prm = await is_premium(req, client)
     
-    # Key को और भी यूनिक और स्टेबल बनाना
-    # यहाँ हम message.id का इस्तेमाल करेंगे ताकि वह सेशन के दौरान बना रहे
-    key = f"{req}_{message.id if not is_edit else message.reply_to_message.id}"
+    # Key को मैसेज आईडी के साथ स्टेबल बनाएं ताकि 'Old Request' एरर न आए
+    msg_id = message.id if not is_edit else message.reply_to_message.id
+    key = f"{req}_{msg_id}"
     BUTTONS[key] = search
 
     btn = []
     files_link = ""
 
-    # लिंक मोड रिकवरी (स्क्रीनशॉट के अनुसार)
+    # लिंक मोड रिकवरी (स्क्रीनशॉट के अनुसार टेक्स्ट लिस्ट)
     if settings['links']:
         files_link = get_file_list_string(files, message.chat.id)
     
@@ -96,10 +97,8 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
                 await reply_msg.edit_media(media=InputMediaPhoto(poster, caption=cap), reply_markup=InlineKeyboardMarkup(btn))
             else:
                 await reply_msg.edit_text(text=cap, reply_markup=InlineKeyboardMarkup(btn))
-        except Exception as e:
-            print(f"Edit Error: {e}")
+        except: pass
     else:
-        # यहाँ files_link पास करना सुनिश्चित करें ताकि टेक्स्ट लिस्ट दिखे
         await send_metadata_reply(message, cap, poster, InlineKeyboardMarkup(btn), settings, files_link)
         await reply_msg.delete()
 
@@ -116,11 +115,22 @@ async def next_page_handler(bot, query: CallbackQuery):
     if req not in [query.from_user.id, 0]:
         return await query.answer("यह आपके लिए नहीं है!", show_alert=True)
 
-    # BUTTONS से सर्च क्वेरी निकालें
     search = BUTTONS.get(key)
     if not search: 
         return await query.answer("पुरानी रिक्वेस्ट है, फिर से सर्च करें।", show_alert=True)
 
-    # edit मोड में auto_filter चलाएं
     await auto_filter(bot, query.message.reply_to_message, query.message, search, offset=offset, is_edit=True)
     await query.answer()
+
+# --- एडमिन के लिए PM सर्च कंट्रोल (यह वापस जोड़ दिया गया है) ---
+@Client.on_message(filters.command('set_pm_search') & filters.user(ADMINS))
+async def set_pm_search_config(client, message):
+    choice = message.command[1].lower() if len(message.command) > 1 else ""
+    if choice == "on":
+        await db.set_config('PM_SEARCH_FOR_ALL', True)
+        await message.reply("✅ अब नॉन-प्रीमियम यूजर्स भी PM में सर्च कर सकते हैं।")
+    elif choice == "off":
+        await db.set_config('PM_SEARCH_FOR_ALL', False)
+        await message.reply("❌ अब PM सर्च केवल प्रीमियम यूजर्स के लिए है।")
+    else:
+        await message.reply("उपयोग: `/set_pm_search on/off`")
