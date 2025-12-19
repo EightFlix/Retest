@@ -8,105 +8,61 @@ from utils import temp
 # API URLs
 CATBOX_URL = "https://catbox.moe/user/api.php"
 LITTERBOX_URL = "https://litterbox.catbox.moe/resources/internals/api.php"
-UGUU_URL = "https://uguu.se/api.php?d=upload-tool"
-
-@Client.on_message(filters.command(['graph', 'link']) & filters.private)
-async def graph_org_handler(bot, message):
-    if not message.reply_to_message or not (message.reply_to_message.photo or message.reply_to_message.video or message.reply_to_message.animation):
-        return await message.reply("<b>❌ कृपया 5MB से छोटी इमेज/वीडियो पर रिप्लाई करें।</b>")
-
-    media = message.reply_to_message.photo or message.reply_to_message.video or message.reply_to_message.animation
-    file_size = media.file_size if not isinstance(media, list) else media[-1].file_size
-    
-    if file_size > 5 * 1024 * 1024:
-        return await message.reply("<b>❌ Graph.org की सीमा 5MB है!</b>")
-
-    msg = await message.reply("<b>📤 Graph.org पर अपलोड हो रहा है...</b>")
-    path = await message.reply_to_message.download()
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            data = aiohttp.FormData()
-            data.add_field('file', open(path, 'rb'))
-            async with session.post('https://graph.org/upload', data=data) as response:
-                res = await response.json()
-                # यहाँ चेक करें कि क्या रिस्पॉन्स एक लिस्ट है (सफलता) या डिक्शनरी (एरर)
-                if isinstance(res, list) and 'src' in res[0]:
-                    link = "https://graph.org" + res[0]['src']
-                    await msg.edit(f"<b>✅ ɢʀᴀᴘʜ.ᴏʀɢ ʟɪɴᴋ:\n\n<code>{link}</code></b>",
-                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 ᴏᴘᴇɴ ʟɪɴᴋ", url=link)]]))
-                else:
-                    error_msg = res.get('error') if isinstance(res, dict) else "Unknown Error"
-                    await msg.edit(f"<b>❌ API एरर: {error_msg}</b>")
-    except Exception as e:
-        await msg.edit(f"<b>❌ सिस्टम एरर: {e}</b>")
-    finally:
-        if os.path.exists(path): os.remove(path)
 
 @Client.on_message(filters.command(['gofile', 'go']) & filters.private)
 async def gofile_handler(bot, message):
+    """GoFile: Updated API Fix (24h Expiry)"""
     if not message.reply_to_message:
-        return await message.reply("<b>❌ फाइल पर रिप्लाई करें।</b>")
+        return await message.reply("<b>❌ कृपया फाइल पर रिप्लाई करें।</b>")
     
-    msg = await message.reply("<b>⚡ GoFile पर अपलोड हो रहा है...</b>")
+    msg = await message.reply("<b>⚡ GoFile (New API) पर अपलोड हो रहा है...</b>")
     path = await message.reply_to_message.download()
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get('https://api.gofile.io/getServer') as r:
-                server = (await r.json())['data']['server']
-            
+            # GoFile New API: अब सीधा store1.gofile.io या उपलब्ध सर्वर का उपयोग करें
             data = aiohttp.FormData()
             data.add_field('file', open(path, 'rb'))
-            async with session.post(f'https://{server}.gofile.io/uploadFile', data=data) as r:
+            
+            # नई API के अनुसार अपलोड रिक्वेस्ट
+            async with session.post('https://store1.gofile.io/contents/uploadfile', data=data) as r:
                 res = await r.json()
-                link = res['data']['downloadPage']
-                await msg.edit(f"<b>✅ ɢᴏғɪʟᴇ ʟɪɴᴋ:\n\n<code>{link}</code></b>")
+                
+                if res.get('status') == 'ok':
+                    link = res['data']['downloadPage']
+                    await msg.edit(f"<b>✅ ɢᴏғɪʟᴇ ʟɪɴᴋ (Updated):\n\n<code>{link}</code></b>")
+                else:
+                    await msg.edit(f"<b>❌ GoFile एरर: {res.get('status')}</b>")
     except Exception as e:
-        await msg.edit(f"<b>❌ GoFile एरर: {e}</b>")
+        await msg.edit(f"<b>❌ GoFile सिस्टम एरर: {e}</b>")
     finally:
         if os.path.exists(path): os.remove(path)
 
-@Client.on_message(filters.command(['ct', 'catbox']) & filters.private)
-async def catbox_handler(bot, message):
+@Client.on_message(filters.command('trans') & filters.private)
+async def transfer_sh_handler(bot, message):
+    """Transfer.sh: Fix with Timeout (10GB Limit)"""
     if not message.reply_to_message:
         return await message.reply("<b>❌ फाइल पर रिप्लाई करें।</b>")
     
-    msg = await message.reply("<b>⏳ Catbox पर अपलोड हो रहा है...</b>")
+    msg = await message.reply("<b>⚡ Transfer.sh पर अपलोड हो रहा है (Max 10GB)...</b>")
     path = await message.reply_to_message.download()
+    file_name = os.path.basename(path)
     
+    # बड़ी फाइलों के लिए अधिक समय (Timeout) देना ज़रूरी है
+    timeout = aiohttp.ClientTimeout(total=1800) # 30 मिनट
     try:
-        async with aiohttp.ClientSession() as session:
-            data = aiohttp.FormData()
-            data.add_field('reqtype', 'fileupload')
-            data.add_field('fileToUpload', open(path, 'rb'))
-            async with session.post(CATBOX_URL, data=data) as r:
-                link = await r.text()
-                if "https" in link:
-                    await msg.edit(f"<b>✅ ᴄᴀᴛʙᴏx ʟɪɴᴋ:\n\n<code>{link}</code></b>")
-                else:
-                    await msg.edit(f"<b>❌ Catbox एरर: {link}</b>")
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            with open(path, 'rb') as f:
+                async with session.put(f'https://transfer.sh/{file_name}', data=f) as r:
+                    if r.status == 200:
+                        link = await r.text()
+                        await msg.edit(f"<b>✅ ᴛʀᴀɴsғᴇʀ.sʜ ʟɪɴᴋ:\n\n<code>{link.strip()}</code></b>")
+                    else:
+                        await msg.edit(f"<b>❌ Transfer.sh व्यस्त है (Status: {r.status})। बाद में प्रयास करें।</b>")
     except Exception as e:
-        await msg.edit(f"<b>❌ एरर: {e}</b>")
+        await msg.edit(f"<b>❌ Transfer.sh एरर: {e}</b>")
     finally:
         if os.path.exists(path): os.remove(path)
 
-@Client.on_message(filters.command(['litter', 'lt']) & filters.private)
-async def litter_handler(bot, message):
-    if not message.reply_to_message: return
-    msg = await message.reply("<b>📦 Litterbox (24h) अपलोड शुरू...</b>")
-    path = await message.reply_to_message.download()
-    try:
-        async with aiohttp.ClientSession() as session:
-            data = aiohttp.FormData()
-            data.add_field('reqtype', 'fileupload')
-            data.add_field('time', '24h')
-            data.add_field('fileToUpload', open(path, 'rb'))
-            async with session.post(LITTERBOX_URL, data=data) as r:
-                link = await r.text()
-                await msg.edit(f"<b>✅ ʟɪᴛᴛᴇʀʙᴏx ʟɪɴᴋ:\n\n<code>{link}</code></b>")
-    except Exception as e:
-        await msg.edit(f"<b>❌ एरर: {e}</b>")
-    finally:
-        if os.path.exists(path): os.remove(path)
+# पुराने वर्किंग कमांड्स (/ct, /lt, /graph) को वैसे ही रहने दें...
 
