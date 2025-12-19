@@ -1,8 +1,10 @@
 import random
 from hydrogram import Client, filters, enums
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
-from info import ADMINS, PICS, UPDATES_LINK, SUPPORT_LINK, URL, BIN_CHANNEL, QUALITY, LANGUAGES, script, temp
-from utils import get_settings, is_premium, get_wish
+# temp को यहाँ से हटाया गया
+from info import ADMINS, PICS, UPDATES_LINK, SUPPORT_LINK, URL, BIN_CHANNEL, QUALITY, LANGUAGES, script
+# temp को यहाँ utils से इम्पोर्ट किया गया
+from utils import get_settings, is_premium, get_wish, temp
 
 @Client.on_callback_query()
 async def cb_handler(client: Client, query: CallbackQuery):
@@ -13,7 +15,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
         await query.answer("बंद किया गया!")
         await query.message.delete()
         try:
-            # अगर रिप्लाई में ओरिजिनल मैसेज है तो उसे भी डिलीट करें
             await query.message.reply_to_message.delete()
         except:
             pass
@@ -28,7 +29,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
         if not await is_premium(query.from_user.id, client):
             return await query.answer("यह केवल प्रीमियम यूजर्स के लिए है! /plan चेक करें।", show_alert=True)
         
-        # फाइल को बिन चैनल में भेजकर लिंक जेनरेट करना
         msg = await client.send_cached_media(chat_id=BIN_CHANNEL, file_id=file_id)
         watch = f"{URL}watch/{msg.id}"
         download = f"{URL}download/{msg.id}"
@@ -68,7 +68,6 @@ async def cb_handler(client: Client, query: CallbackQuery):
         )
 
     elif data == "start":
-        # मुख्य स्टार्ट मेनू पर वापस जाना
         buttons = [[
             InlineKeyboardButton("+ Add Me To Your Group +", url=f'http://t.me/{temp.U_NAME}?startgroup=start')
         ],[
@@ -83,7 +82,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    # --- लैंग्वेज और क्वालिटी चयन के लिए मेनू ---
+    # --- लैंग्वेज और क्वालिटी चयन ---
     elif data.startswith("languages"):
         _, key, req, offset = data.split("#")
         if int(req) != query.from_user.id:
@@ -110,12 +109,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
         btn.append([InlineKeyboardButton("⪻ Back to Results", callback_data=f"next_{req}_{key}_{offset}")])
         await query.message.edit_text("<b>अपनी पसंद की क्वालिटी चुनें 👇</b>", reply_markup=InlineKeyboardMarkup(btn))
 
-    # --- एडमिन स्टेट्स (About से) ---
-    elif data == "stats_callback":
-        if query.from_user.id not in ADMINS:
-            return await query.answer("केवल एडमिन्स के लिए!", show_alert=True)
-        # यहाँ आप चाहें तो admin_tools से stats_cmd को कॉल कर सकते हैं या अलर्ट दिखा सकते हैं
-        await query.answer("कृपया /stats कमांड का उपयोग करें।", show_alert=True)
-
     elif data == "owner_info":
-        await query.message.edit_caption(caption=script.MY_OWNER_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('« Back', callback_data='about')]]))
+        await query.message.edit_caption(
+            caption=script.MY_OWNER_TXT, 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('« Back', callback_data='about')]])
+        )
+
