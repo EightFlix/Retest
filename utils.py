@@ -25,7 +25,7 @@ class temp(object):
     BOT = None
     PREMIUM = {}
 
-# --- प्रीमियम और सब्स्क्रिप्शन फंक्शन्स ---
+# --- Verification & Subscriber Status ---
 
 async def is_subscribed(bot, query):
     btn = []
@@ -43,6 +43,27 @@ async def is_subscribed(bot, query):
         except: pass
     return btn
 
+async def get_verify_status(user_id):
+    """ inline.py के लिए ज़रूरी फंक्शन """
+    verify = temp.VERIFICATIONS.get(user_id)
+    if not verify:
+        verify = await db.get_verify_status(user_id)
+        temp.VERIFICATIONS[user_id] = verify
+    return verify
+
+async def update_verify_status(user_id, verify_token="", is_verified=False, link="", expire_time=0):
+    current = await get_verify_status(user_id)
+    current.update({
+        'verify_token': verify_token,
+        'is_verified': is_verified,
+        'link': link,
+        'expire_time': expire_time
+    })
+    temp.VERIFICATIONS[user_id] = current
+    await db.update_verify_status(user_id, current)
+
+# --- Premium Status ---
+
 async def is_premium(user_id, bot):
     if not IS_PREMIUM or user_id in ADMINS:
         return True
@@ -56,21 +77,7 @@ async def is_premium(user_id, bot):
         return True
     return False
 
-async def check_premium(bot):
-    """ प्रीमियम यूजर्स का स्टेटस ऑटो-चेक करने के लिए """
-    while True:
-        pr = [i for i in db.get_premium_users() if i['status']['premium']]
-        for p in pr:
-            mp = p['status']
-            if mp['expire'] < datetime.now():
-                try:
-                    await bot.send_message(p['id'], "Your premium plan has expired.")
-                except: pass
-                mp.update({'expire': '', 'plan': '', 'premium': False})
-                db.update_plan(p['id'], mp)
-        await asyncio.sleep(1200)
-
-# --- ब्रॉडकास्ट फंक्शन्स ---
+# --- Broadcast Features ---
 
 async def broadcast_messages(user_id, message, pin):
     try:
@@ -84,24 +91,10 @@ async def broadcast_messages(user_id, message, pin):
         await db.delete_user(int(user_id))
         return "Error"
 
-async def groups_broadcast_messages(chat_id, message, pin):
-    try:
-        k = await message.copy(chat_id=chat_id)
-        if pin: 
-            try: await k.pin()
-            except: pass
-        return "Success"
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        return await groups_broadcast_messages(chat_id, message, pin)
-    except:
-        await db.delete_chat(chat_id)
-        return "Error"
-
-# --- अन्य उपयोगिता फंक्शन्स ---
+# --- Utility Functions ---
 
 async def get_poster(query, bulk=False, id=False, file=None):
-    return None # IMDb हटा दिया गया है
+    return None # IMDb disabled for speed
 
 def get_size(size):
     units = ["Bytes", "KB", "MB", "GB", "TB"]
@@ -131,9 +124,3 @@ async def get_settings(group_id):
         settings = await db.get_settings(group_id)
         temp.SETTINGS[group_id] = settings
     return settings
-
-def get_wish():
-    now = datetime.now(pytz.timezone(TIME_ZONE)).strftime("%H")
-    if now < "12": return "ɢᴏᴏᴅ ᴍᴏʀɴɪɴɢ 🌞"
-    if now < "18": return "ɢᴏᴏᴅ ᴀꜰᴛᴇʀɴᴏᴏɴ 🌗"
-    return "ɢᴏᴏᴅ ᴇᴠᴇɴɪɴɢ 🌘"
