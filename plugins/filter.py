@@ -3,12 +3,12 @@ import math
 import time
 import asyncio
 from hydrogram import Client, filters, enums
-from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, InputMediaPhoto
+from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from info import ADMINS, MAX_BTN, SPELL_CHECK, script, LANGUAGES, QUALITY
 from database.users_chats_db import db
 from database.ia_filterdb import get_search_results
 from utils import get_settings, get_size, is_premium, get_shortlink, get_readable_time, temp
-from .metadata import get_imdb_metadata, get_file_list_string, send_metadata_reply
+from .metadata import get_file_list_string
 
 # इन-मेमोरी स्टोरेज
 BUTTONS = {}
@@ -30,8 +30,8 @@ async def filter_handler(client, message):
     search = re.sub(r"\s+", " ", re.sub(r"[-:\"';!]", " ", message.text)).strip()
     if not search: return
 
-    reply_msg = await message.reply_text(f"<b><i>🔍 `{search}` सर्च किया जा रहा है...</i></b>")
-    await auto_filter(client, message, reply_msg, search)
+    # IMDb हटने के बाद रिस्पॉन्स इतना तेज है कि 'Searching' मैसेज की जरूरत कम पड़ेगी
+    await auto_filter(client, message, None, search)
 
 async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=False):
     settings = await get_settings(message.chat.id)
@@ -39,34 +39,23 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
 
     if not files:
         if settings["spell_check"]:
+            # अगर पहले से कोई रिस्पॉन्स मैसेज नहीं है (New search), तो एक नया मैसेज बनाकर स्पेल चेक दिखाएं
+            if not reply_msg:
+                reply_msg = await message.reply_text("🔎 Searching...")
             return await suggest_spelling(message, reply_msg, search)
         else:
             if is_edit: return await reply_msg.answer("कोई और फाइल नहीं मिली।", show_alert=True)
-            return await reply_msg.edit(f"क्षमा करें, `{search}` नहीं मिला।")
+            return await message.reply(f"क्षमा करें, `{search}` नहीं मिला।")
 
     req = message.from_user.id if message.from_user else 0
     is_prm = await is_premium(req, client)
     short_search = search[:25] 
     
     btn = []
-    files_link = ""
-
-    # ✅ फाइल लिस्ट जनरेट करना
-    if settings['links']:
-        files_link = get_file_list_string(files, message.chat.id, offset=offset+1)
+    # फाइलों की लिस्ट (links) तैयार करना - इसमें metadata.py का उपयोग होगा
+    files_link = get_file_list_string(files, message.chat.id, offset=offset+1)
     
-    # ✅ बटन मोड
-    if not settings['links']:
-        for file in files:
-            # फाइल नाम से कचरा (h4hBYE>) साफ करना
-            clean_name = re.sub(r'^[a-zA-Z0-9]+>', '', file['file_name']).strip()
-            if is_prm:
-                btn.append([InlineKeyboardButton(f"[{get_size(file['file_size'])}] {clean_name}", callback_data=f"file#{file['_id']}")])
-            else:
-                f_link = await get_shortlink(settings['url'], settings['api'], f"https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{file['_id']}")
-                btn.append([InlineKeyboardButton(f"⚡ [{get_size(file['file_size'])}] {clean_name}", url=f_link)])
-
-    # ✅ पेजिनेशन बटन्स
+    # ✅ पेजिनेशन बटन्स (Back/Next)
     pagination_row = []
     if offset != 0:
         pagination_row.append(InlineKeyboardButton("« ʙᴀᴄᴋ", callback_data=f"next_{req}_{int(offset)-MAX_BTN}_{short_search}"))
@@ -78,6 +67,7 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
     
     btn.append(pagination_row)
     
+    # ✅ लैंग्वेज और क्वालिटी मेनू बटन्स
     btn.insert(0, [
         InlineKeyboardButton("🌐 ʟᴀɴɢᴜᴀɢᴇ", callback_data=f"filter_menu#lang#{req}#{offset}#{short_search}"),
         InlineKeyboardButton("🔍 ǫᴜᴀʟɪᴛʏ", callback_data=f"filter_menu#qual#{req}#{offset}#{short_search}")
@@ -86,61 +76,65 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
     if not is_prm:
         btn.append([InlineKeyboardButton('🤑 ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ', url=f"https://t.me/{temp.U_NAME}?start=premium")])
 
-    # ✅ स्पीड फिक्स: अगर पेज बदल रहे हैं (is_edit), तो IMDb दोबारा लोड न करें
-    if is_edit:
-        cap = f"<b>💭 ʜᴇʏ,\n♻️ ʜᴇʀᴇ ɪ ꜰᴏᴜɴᴅ ꜰᴏʀ ʏᴏᴜʀ sᴇᴀʀᴄʜ {search}...</b>"
-        poster = None
-    else:
-        cap, poster = await get_imdb_metadata(search, files, settings)
-    
-    full_caption = cap + (files_link if files_link else "")
+    # ✅ IMDb पूरी तरह हटा दिया गया है - सीधा और फ़ास्ट कैप्शन
+    full_caption = f"<b>💭 ʜᴇʏ,\n♻️ ʜᴇʀᴇ ɪ ꜰᴏᴜɴᴅ ꜰᴏʀ ʏᴏᴜʀ sᴇᴀʀᴄʜ {search}...</b>\n" + files_link
 
     if is_edit:
         try:
-            # edit_text ज्यादा तेज काम करता है
-            await reply_msg.edit_text(text=full_caption[:4096], reply_markup=InlineKeyboardMarkup(btn), disable_web_page_preview=True)
+            # बिना मीडिया के सिर्फ टेक्स्ट एडिट करना सबसे तेज है
+            await reply_msg.edit_text(
+                text=full_caption[:4096], 
+                reply_markup=InlineKeyboardMarkup(btn), 
+                disable_web_page_preview=True
+            )
         except: pass
     else:
-        await send_metadata_reply(message, cap, poster, InlineKeyboardMarkup(btn), settings, files_link)
-        await reply_msg.delete()
+        # सीधा टेक्स्ट मैसेज भेजना बिना किसी देरी के
+        await message.reply_text(
+            text=full_caption,
+            reply_markup=InlineKeyboardMarkup(btn),
+            disable_web_page_preview=True,
+            quote=True
+        )
 
-# --- CALLBACK HANDLERS ---
+# --- CALLBACK HANDLERS (बटनों के लिए) ---
 
-@Client.on_callback_query(filters.regex(r"^filter_menu"))
-async def filter_selection_handler(client, query):
-    _, type, req, offset, search = query.data.split("#")
-    if int(req) != query.from_user.id:
-        return await query.answer("यह आपके लिए नहीं है!", show_alert=True)
+@Client.on_callback_query(filters.regex(r"^(next|filter_menu|apply_filter)"))
+async def cb_handler(client, query):
+    data = query.data
+    # पेजिनेशन हैंडलर
+    if data.startswith("next"):
+        _, req, offset, search = data.split("_")
+        if int(req) not in [query.from_user.id, 0]:
+            return await query.answer("यह आपके लिए नहीं है!", show_alert=True)
+        await auto_filter(client, query.message.reply_to_message, query.message, search, offset=int(offset), is_edit=True)
     
-    items = LANGUAGES if type == "lang" else QUALITY
-    btn = []
-    for i in range(0, len(items), 2):
-        row = [InlineKeyboardButton(items[i].title(), callback_data=f"apply_filter#{items[i]}#{search}#{offset}#{req}")]
-        if i+1 < len(items):
-            row.append(InlineKeyboardButton(items[i+1].title(), callback_data=f"apply_filter#{items[i+1]}#{search}#{offset}#{req}"))
-        btn.append(row)
+    # फिल्टर मेनू (Language/Quality)
+    elif data.startswith("filter_menu"):
+        _, type, req, offset, search = data.split("#")
+        if int(req) not in [query.from_user.id, 0]:
+            return await query.answer("यह आपके लिए नहीं है!", show_alert=True)
+        
+        items = LANGUAGES if type == "lang" else QUALITY
+        btn = []
+        for i in range(0, len(items), 2):
+            row = [InlineKeyboardButton(items[i].title(), callback_data=f"apply_filter#{items[i]}#{search}#{offset}#{req}")]
+            if i+1 < len(items):
+                row.append(InlineKeyboardButton(items[i+1].title(), callback_data=f"apply_filter#{items[i+1]}#{search}#{offset}#{req}"))
+            btn.append(row)
+        
+        btn.append([InlineKeyboardButton("⪻ ʙᴀᴄᴋ", callback_data=f"next_{req}_{offset}_{search}")])
+        await query.message.edit_text(f"<b>Select {type.title()} for '{search}':</b>", reply_markup=InlineKeyboardMarkup(btn))
+
+    # फिल्टर अप्लाई करना
+    elif data.startswith("apply_filter"):
+        _, choice, search, offset, req = data.split("#")
+        if int(req) not in [query.from_user.id, 0]:
+            return await query.answer("यह आपके लिए नहीं है!", show_alert=True)
+            
+        await query.answer(f"Applying: {choice}")
+        await auto_filter(client, query.message.reply_to_message, query.message, f"{search} {choice}", offset=0, is_edit=True)
     
-    btn.append([InlineKeyboardButton("⪻ ʙᴀᴄᴋ", callback_data=f"next_{req}_{offset}_{search}")])
-    await query.message.edit_text(f"<b>Select {type.title()} for '{search}':</b>", reply_markup=InlineKeyboardMarkup(btn))
-
-@Client.on_callback_query(filters.regex(r"^apply_filter"))
-async def apply_filter_handler(client, query):
-    _, choice, search, offset, req = query.data.split("#")
-    await query.answer(f"Applying: {choice}")
-    # यहाँ भी is_edit=True रखें ताकि पोस्टर दोबारा लोड न हो
-    await auto_filter(client, query.message.reply_to_message, query.message, f"{search} {choice}", offset=0, is_edit=True)
-
-@Client.on_callback_query(filters.regex(r"^next"))
-async def next_page_handler(bot, query):
-    data = query.data.split("_")
-    req = int(data[1])
-    offset = int(data[2])
-    search = data[3]
-
-    if req not in [query.from_user.id, 0]:
-        return await query.answer("यह आपके लिए नहीं है!", show_alert=True)
-
-    await auto_filter(bot, query.message.reply_to_message, query.message, search, offset=offset, is_edit=True)
     await query.answer()
 
 async def suggest_spelling(message, reply_msg, search):
