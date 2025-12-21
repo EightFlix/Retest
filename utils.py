@@ -1,7 +1,13 @@
+import asyncio
+import pytz
+import qrcode
+from io import BytesIO
+from datetime import datetime, timedelta
+
 from hydrogram.errors import UserNotParticipant, FloodWait
 from hydrogram.types import InlineKeyboardButton
+
 from info import (
-    LONG_IMDB_DESCRIPTION,
     ADMINS,
     IS_PREMIUM,
     TIME_ZONE,
@@ -9,53 +15,58 @@ from info import (
     SHORTLINK_URL
 )
 
-import asyncio
-import pytz
-import qrcode
-from io import BytesIO
-from datetime import datetime, timedelta
-
 from database.users_chats_db import db
 from shortzy import Shortzy
 
 
 # ======================================================
-# 🧠 TEMP CACHE
+# 🧠 TEMP RUNTIME CACHE
 # ======================================================
 
 class temp(object):
     START_TIME = 0
-    BANNED_USERS = []
-    BANNED_CHATS = []
+    BOT = None
+
+    # runtime info
     ME = None
-    CANCEL = False
     U_NAME = None
     B_NAME = None
+
+    # moderation
+    BANNED_USERS = []
+    BANNED_CHATS = []
+
+    # index / broadcast
+    CANCEL = False
+    USERS_CANCEL = False
+    GROUPS_CANCEL = False
+
+    # caches
     SETTINGS = {}
     VERIFICATIONS = {}
     FILES = {}
-    USERS_CANCEL = False
-    GROUPS_CANCEL = False
-    BOT = None
+
+    # premium cache (light)
     PREMIUM = {}
 
 
 # ======================================================
-# 🔐 PREMIUM CONFIG
+# 👑 PREMIUM CORE CONFIG
 # ======================================================
 
-GRACE_PERIOD = timedelta(minutes=20)  # hidden grace
+GRACE_PERIOD = timedelta(minutes=20)  # hidden grace window
 
 
 # ======================================================
-# 🔳 QR CODE GENERATOR
+# 🔳 QR CODE
 # ======================================================
 
 async def generate_qr_code(data: str):
-    qr = qrcode.QRCode(version=1, box_size=10, border=4)
+    qr = qrcode.QRCode(box_size=10, border=4)
     qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
+
     bio = BytesIO()
     bio.name = "qr.png"
     img.save(bio, "PNG")
@@ -70,6 +81,7 @@ async def generate_qr_code(data: str):
 async def is_subscribed(bot, query):
     buttons = []
 
+    # premium bypass
     if await is_premium(query.from_user.id, bot):
         return buttons
 
@@ -82,9 +94,12 @@ async def is_subscribed(bot, query):
             chat = await bot.get_chat(int(cid))
             await bot.get_chat_member(int(cid), query.from_user.id)
         except UserNotParticipant:
-            buttons.append(
-                [InlineKeyboardButton(f"Join : {chat.title}", url=chat.invite_link)]
-            )
+            buttons.append([
+                InlineKeyboardButton(
+                    f"📢 Join {chat.title}",
+                    url=chat.invite_link
+                )
+            ])
         except:
             pass
 
@@ -92,30 +107,28 @@ async def is_subscribed(bot, query):
 
 
 # ======================================================
-# ✅ VERIFY STATUS
+# ✅ VERIFY SYSTEM
 # ======================================================
 
 async def get_verify_status(user_id):
-    verify = temp.VERIFICATIONS.get(user_id)
-    if not verify:
-        verify = await db.get_verify_status(user_id)
-        temp.VERIFICATIONS[user_id] = verify
-    return verify
+    if user_id not in temp.VERIFICATIONS:
+        temp.VERIFICATIONS[user_id] = await db.get_verify_status(user_id)
+    return temp.VERIFICATIONS[user_id]
 
 
 async def update_verify_status(user_id, **kwargs):
-    current = await get_verify_status(user_id)
-    current.update(kwargs)
-    temp.VERIFICATIONS[user_id] = current
-    await db.update_verify_status(user_id, current)
+    verify = await get_verify_status(user_id)
+    verify.update(kwargs)
+    temp.VERIFICATIONS[user_id] = verify
+    await db.update_verify_status(user_id, verify)
 
 
 # ======================================================
-# 👑 PREMIUM CHECK (SINGLE SOURCE OF TRUTH)
+# 👑 PREMIUM CHECK (SYNCED WITH premium.py)
 # ======================================================
 
 async def is_premium(user_id, bot=None) -> bool:
-    # Admin & global switch
+    # global off OR admin
     if not IS_PREMIUM or user_id in ADMINS:
         return True
 
@@ -132,11 +145,11 @@ async def is_premium(user_id, bot=None) -> bool:
 
     now = datetime.utcnow()
 
-    # ⏳ Hidden grace period
+    # grace window
     if now <= expire + GRACE_PERIOD:
         return True
 
-    # ❌ Hard expired → silent cleanup
+    # hard expiry → cleanup
     mp.update({
         "premium": False,
         "plan": "",
@@ -148,13 +161,13 @@ async def is_premium(user_id, bot=None) -> bool:
 
 
 # ======================================================
-# 🔁 LIGHT PREMIUM GUARDIAN
+# 🛡️ LIGHT PREMIUM GUARDIAN
 # ======================================================
 
 async def check_premium(bot):
     """
-    Lightweight safety loop.
-    UI & reminders handled in bot.py
+    Lightweight background safety loop.
+    UI & reminders handled in premium.py
     """
     while True:
         try:
@@ -185,18 +198,18 @@ async def check_premium(bot):
         except:
             pass
 
-        await asyncio.sleep(1800)  # every 30 minutes
+        await asyncio.sleep(1800)  # 30 min
 
 
 # ======================================================
-# 📢 BROADCAST
+# 📢 BROADCAST HELPERS
 # ======================================================
 
-async def broadcast_messages(user_id, message, pin):
+async def broadcast_messages(user_id, message, pin=False):
     try:
-        m = await message.copy(chat_id=user_id)
+        msg = await message.copy(chat_id=user_id)
         if pin:
-            await m.pin(both_sides=True)
+            await msg.pin(both_sides=True)
         return "Success"
     except FloodWait as e:
         await asyncio.sleep(e.value)
@@ -206,12 +219,12 @@ async def broadcast_messages(user_id, message, pin):
         return "Error"
 
 
-async def groups_broadcast_messages(chat_id, message, pin):
+async def groups_broadcast_messages(chat_id, message, pin=False):
     try:
-        m = await message.copy(chat_id=chat_id)
+        msg = await message.copy(chat_id=chat_id)
         if pin:
             try:
-                await m.pin()
+                await msg.pin()
             except:
                 pass
         return "Success"
@@ -224,17 +237,16 @@ async def groups_broadcast_messages(chat_id, message, pin):
 
 
 # ======================================================
-# 🧰 UTILITIES
+# 🧰 SMALL UTILITIES
 # ======================================================
 
 def get_size(size):
-    units = ["Bytes", "KB", "MB", "GB", "TB"]
     size = float(size)
-    i = 0
-    while size >= 1024 and i < len(units) - 1:
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024:
+            return f"{size:.2f} {unit}"
         size /= 1024
-        i += 1
-    return f"{size:.2f} {units[i]}"
+    return f"{size:.2f} PB"
 
 
 async def get_shortlink(url, api, link):
@@ -244,26 +256,24 @@ async def get_shortlink(url, api, link):
 
 def get_readable_time(seconds):
     periods = [("d", 86400), ("h", 3600), ("m", 60), ("s", 1)]
-    result = ""
+    out = ""
     for name, sec in periods:
         if seconds >= sec:
             val, seconds = divmod(seconds, sec)
-            result += f"{int(val)}{name}"
-    return result or "0s"
+            out += f"{int(val)}{name} "
+    return out.strip() or "0s"
 
 
 async def get_settings(group_id):
-    stg = temp.SETTINGS.get(group_id)
-    if not stg:
-        stg = await db.get_settings(group_id)
-        temp.SETTINGS[group_id] = stg
-    return stg
+    if group_id not in temp.SETTINGS:
+        temp.SETTINGS[group_id] = await db.get_settings(group_id)
+    return temp.SETTINGS[group_id]
 
 
 def get_wish():
     hour = datetime.now(pytz.timezone(TIME_ZONE)).hour
     if hour < 12:
-        return "Good Morning 🌞"
+        return "🌞 Good Morning"
     if hour < 18:
-        return "Good Afternoon 🌗"
-    return "Good Evening 🌘"
+        return "🌤 Good Afternoon"
+    return "🌙 Good Evening"
