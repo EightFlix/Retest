@@ -1,36 +1,27 @@
 import re
 import math
 import time
-import asyncio
 from hydrogram import Client, filters, enums
-from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from info import ADMINS, MAX_BTN, script, LANGUAGES, QUALITY
+from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from info import ADMINS, MAX_BTN, LANGUAGES, QUALITY
 from database.users_chats_db import db
 from database.ia_filterdb import get_search_results
 from utils import get_settings, get_size, is_premium, temp
 
-# ------------------ ⚡ PERFORMANCE GLOBALS ------------------
-SEARCH_CACHE = {}      # key -> (files, n_offset, total, ts)
-CACHE_TTL = 60         # seconds
-LAST_SEARCH = {}       # user_id -> last_time
-SEARCH_COOLDOWN = 2    # seconds
+# ===================== ⚡ SAFE CACHE =====================
+SEARCH_CACHE = {}     # key -> (files, n_offset, total, ts)
+CACHE_TTL = 45        # seconds (safe)
 
 RE_CLEAN = re.compile(r"[-:\"';!]")
 RE_SPACE = re.compile(r"\s+")
 
-# ------------------ 📩 MESSAGE HANDLER ------------------
+# ===================== 📩 MESSAGE HANDLER =====================
 @Client.on_message(filters.text & filters.incoming & (filters.group | filters.private))
 async def filter_handler(client, message):
     if message.text.startswith("/"):
         return
 
     user_id = message.from_user.id
-
-    # ---- Cooldown (anti spam) ----
-    now = time.time()
-    if user_id in LAST_SEARCH and now - LAST_SEARCH[user_id] < SEARCH_COOLDOWN:
-        return
-    LAST_SEARCH[user_id] = now
 
     # ---- PM Search permission ----
     if message.chat.type == enums.ChatType.PRIVATE:
@@ -39,49 +30,49 @@ async def filter_handler(client, message):
             stg = db.get_bot_sttgs()
             if not stg.get("PM_SEARCH", True):
                 return await message.reply_text(
-                    "<b>❌ PM Search disabled</b>\n\nOnly premium users can search in PM."
+                    "<b>❌ PM search disabled</b>\n\nOnly premium users can search in PM."
                 )
 
-    # ---- Clean search text ----
+    # ---- Clean + normalize search ----
     search = RE_SPACE.sub(
         " ",
         RE_CLEAN.sub(" ", message.text)
-    ).strip()
+    ).strip().lower()
 
     if not search or len(search) < 2:
         return
 
     await auto_filter(client, message, None, search)
 
-# ------------------ 🔎 AUTO FILTER ------------------
+# ===================== 🔎 AUTO FILTER =====================
 async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=False):
     settings = await get_settings(message.chat.id)
     result_mode = settings.get("result_mode", "button")  # button | link
 
-    # ---- CACHE CHECK ----
     cache_key = f"{search}:{offset}"
     cached = SEARCH_CACHE.get(cache_key)
 
+    # ---- CACHE SAFE LOAD ----
     if cached and time.time() - cached[3] < CACHE_TTL:
         files, n_offset, total = cached[:3]
     else:
         files, n_offset, total = await get_search_results(search, offset)
-        SEARCH_CACHE[cache_key] = (files, n_offset, total, time.time())
+        if files:  # ❗ empty result cache मत करो
+            SEARCH_CACHE[cache_key] = (files, n_offset, total, time.time())
 
     if not files:
-        return await message.reply(f"❌ `{search}` नहीं मिला")
+        return await message.reply_text(f"❌ <b>{search}</b> नहीं मिला")
 
     req = message.from_user.id
     short_search = search[:25]
 
     buttons = []
 
-    # ---------------- FILE RESULTS ----------------
+    # ================= FILE RESULTS =================
     for file in files:
         clean_name = re.sub(r'^[a-zA-Z0-9]+>', '', file['file_name']).strip()
         f_size = get_size(file['file_size'])
 
-        # 🔥 RESULT MODE FIXED
         if result_mode == "link":
             link = f"https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{file['_id']}"
             buttons.append([
@@ -98,13 +89,13 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
                 )
             ])
 
-    # ---------------- PAGINATION ----------------
+    # ================= PAGINATION =================
     page_btn = []
 
     if offset > 0:
         page_btn.append(
             InlineKeyboardButton(
-                "« ʙᴀᴄᴋ",
+                "« BACK",
                 callback_data=f"next_{req}_{offset-MAX_BTN}_{short_search}"
             )
         )
@@ -119,31 +110,35 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
     if n_offset:
         page_btn.append(
             InlineKeyboardButton(
-                "ɴᴇxᴛ »",
+                "NEXT »",
                 callback_data=f"next_{req}_{n_offset}_{short_search}"
             )
         )
 
     buttons.append(page_btn)
 
-    # ---------------- FILTER BUTTONS ----------------
+    # ================= FILTER BUTTONS =================
     buttons.insert(0, [
-        InlineKeyboardButton("🌐 Language", callback_data=f"filter_menu#lang#{req}#{offset}#{short_search}"),
-        InlineKeyboardButton("🔍 Quality", callback_data=f"filter_menu#qual#{req}#{offset}#{short_search}")
+        InlineKeyboardButton("🌐 LANGUAGE", callback_data=f"filter_menu#lang#{req}#{offset}#{short_search}"),
+        InlineKeyboardButton("🔍 QUALITY", callback_data=f"filter_menu#qual#{req}#{offset}#{short_search}")
     ])
 
     caption = (
-        f"<b>💭 Hey!\n"
-        f"♻️ Results for:</b> <code>{search}</code>\n\n"
-        f"<i>⚡ Ultra-Fast Search Enabled</i>"
+        f"<b>HEY 👋</b>\n"
+        f"♻️ Here I found results for:\n"
+        f"<code>{search}</code>"
     )
 
     if is_edit:
         await reply_msg.edit_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
     else:
-        await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
+        await message.reply_text(
+            caption,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            quote=True
+        )
 
-# ------------------ 🔁 CALLBACK HANDLER ------------------
+# ===================== 🔁 CALLBACK HANDLER =====================
 @Client.on_callback_query(filters.regex(r"^(next|filter_menu|apply_filter)"))
 async def cb_handler(client, query):
     data = query.data
@@ -174,19 +169,21 @@ async def cb_handler(client, query):
                     callback_data=f"apply_filter#{items[i]}#{search}#{offset}#{req}"
                 )
             ]
-            if i+1 < len(items):
+            if i + 1 < len(items):
                 row.append(
                     InlineKeyboardButton(
-                        items[i+1].title(),
-                        callback_data=f"apply_filter#{items[i+1]}#{search}#{offset}#{req}"
+                        items[i + 1].title(),
+                        callback_data=f"apply_filter#{items[i + 1]}#{search}#{offset}#{req}"
                     )
                 )
             btn.append(row)
 
-        btn.append([InlineKeyboardButton("⪻ Back", callback_data=f"next_{req}_{offset}_{search}")])
+        btn.append([
+            InlineKeyboardButton("⪻ BACK", callback_data=f"next_{req}_{offset}_{search}")
+        ])
 
         await query.message.edit_text(
-            f"<b>Select {ftype.title()}:</b>",
+            f"<b>Select {ftype.title()}</b>",
             reply_markup=InlineKeyboardMarkup(btn)
         )
 
