@@ -1,125 +1,199 @@
+import re
+import asyncio
+from datetime import datetime, timedelta
 from hydrogram import Client, filters, enums
-from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from info import ADMINS, LOG_CHANNEL, script
 from database.users_chats_db import db
-from info import ADMINS, script, LOG_CHANNEL
 from utils import get_settings
 
-@Client.on_message(filters.command('settings') & filters.group)
-async def settings_group(client, message):
-    """ग्रुप में सेटिंग्स मेनू खोलता है (केवल एडमिन्स के लिए)"""
-    userid = message.from_user.id if message.from_user else None
-    if not userid:
-        return await message.reply("आप एक गुमनाम एडमिन हैं, कृपया अपने अकाउंट से मैसेज करें।")
-    
-    # चेक करें कि क्या यूजर एडमिन है
-    chat_member = await client.get_chat_member(message.chat.id, userid)
-    if chat_member.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER] and userid not in ADMINS:
-        return await message.reply("यह कमांड केवल ग्रुप एडमिन्स के लिए है।")
+# =========================
+# CONFIG (Phase-1)
+# =========================
+LINK_DELETE_TIME = 300        # 5 minutes
+MAX_WARNS = 3
+AUTO_MUTE_TIME = 600          # 10 minutes
 
-    settings = await db.get_settings(message.chat.id)
-    if settings is not None:
-        buttons = [
-            [
-                InlineKeyboardButton('IMDB', callback_data=f'setgs#imdb#{settings["imdb"]}#{message.chat.id}'),
-                InlineKeyboardButton('✅ ᴏɴ' if settings["imdb"] else '❌ ᴏꜰꜰ', callback_data=f'setgs#imdb#{settings["imdb"]}#{message.chat.id}')
-            ],
-            [
-                InlineKeyboardButton('sᴘᴇʟʟ ᴄʜᴇᴄᴋ', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{message.chat.id}'),
-                InlineKeyboardButton('✅ ᴏɴ' if settings["spell_check"] else '❌ ᴏꜰꜰ', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{message.chat.id}')
-            ],
-            [
-                InlineKeyboardButton('ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ', callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{message.chat.id}'),
-                InlineKeyboardButton('✅ ᴏɴ' if settings["auto_delete"] else '❌ ᴏꜰꜰ', callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{message.chat.id}')
-            ],
-            [
-                InlineKeyboardButton('ᴡᴇʟᴄᴏᴍᴇ', callback_data=f'setgs#welcome#{settings["welcome"]}#{message.chat.id}'),
-                InlineKeyboardButton('✅ ᴏɴ' if settings["welcome"] else '❌ ᴏꜰꜰ', callback_data=f'setgs#welcome#{settings["welcome"]}#{message.chat.id}')
-            ]
-        ]
-        await message.reply_text(
-            text=f"<b>⚙️ {message.chat.title} की सेटिंग्स बदलें:</b>",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode=enums.ParseMode.HTML
-        )
+LINK_REGEX = re.compile(
+    r"(https?://|t\.me/|telegram\.me/|bit\.ly|tinyurl)",
+    re.IGNORECASE
+)
 
-@Client.on_message(filters.command('connect') & filters.private)
-async def connect_pm(client, message):
-    """ग्रुप को PM से कनेक्ट करने का निर्देश"""
-    await message.reply_text(
-        "किसी ग्रुप को कनेक्ट करने के लिए, मुझे उस ग्रुप में एडमिन बनाएँ और ग्रुप में <code>/connect</code> लिखें।"
-    )
+# =========================
+# HELPERS
+# =========================
 
-@Client.on_message(filters.command('connect') & filters.group)
-async def connect_group(client, message):
-    """ग्रुप में /connect कमांड चलाने पर PM कनेक्शन सेट करता है"""
-    userid = message.from_user.id
-    group_id = message.chat.id
-    group_name = message.chat.title
-    
-    db.add_connect(group_id, userid)
-    await message.reply_text(
-        f"सफलतापूर्वक कनेक्टेड!\nअब आप अपनी PM में <b>{group_name}</b> की सेटिंग्स मैनेज कर सकते हैं।",
-        parse_mode=enums.ParseMode.HTML
-    )
+def ist_time():
+    return datetime.now().strftime("%d %b %Y, %I:%M %p")
 
-@Client.on_message(filters.new_chat_members & filters.group)
-async def welcome_members(client, message):
-    """नए मेंबर्स का स्वागत करता है"""
-    settings = await db.get_settings(message.chat.id)
-    if not settings.get("welcome", True):
-        return
-    
-    for member in message.new_chat_members:
-        await message.reply_text(
-            script.WELCOME_TEXT.format(mention=member.mention, title=message.chat.title)
-        )
-
-@Client.on_message(filters.command('id'))
-async def get_id(client, message):
-    """चैट या यूजर की ID बताता है"""
-    if message.chat.type == enums.ChatType.PRIVATE:
-        await message.reply_text(f"आपकी ID: <code>{message.from_user.id}</code>")
-    else:
-        await message.reply_text(f"ग्रुप ID: <code>{message.chat.id}</code>")
-
-@Client.on_callback_query(filters.regex(r'^setgs#'))
-async def update_settings_callback(client, query: CallbackQuery):
-    """सेटिंग्स को टॉगल (On/Off) करने का कॉल-बैक"""
-    _, field, current_status, chat_id = query.data.split('#')
-    chat_id = int(chat_id)
-    new_status = False if current_status == 'True' else True
-    
-    # चेक करें कि क्या यूजर एडमिन है
-    user_id = query.from_user.id
+async def log_action(client, text):
     try:
-        chat_member = await client.get_chat_member(chat_id, user_id)
-        if chat_member.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER] and user_id not in ADMINS:
-            return await query.answer("आप एडमिन नहीं हैं!", show_alert=True)
+        await client.send_message(LOG_CHANNEL, text)
     except:
-        return await query.answer("कुछ गलत हुआ।", show_alert=True)
+        pass
+
+async def warn_user(user_id, chat_id):
+    data = db.get_warn(user_id, chat_id) or {"count": 0}
+    data["count"] += 1
+    db.set_warn(user_id, chat_id, data)
+    return data["count"]
+
+async def reset_warn(user_id, chat_id):
+    db.clear_warn(user_id, chat_id)
+
+# =========================
+# AUTO-DELETE LINKS (ADMIN INCLUDED)
+# =========================
+
+@Client.on_message(filters.group & filters.text)
+async def auto_delete_links(client, message):
+    if not message.text:
+        return
+
+    settings = await db.get_settings(message.chat.id)
+    if not settings.get("auto_delete", True):
+        return
+
+    if LINK_REGEX.search(message.text):
+        await asyncio.sleep(LINK_DELETE_TIME)
+        try:
+            await message.delete()
+        except:
+            pass
+
+# =========================
+# ANTI-LINK + WARN + MUTE
+# =========================
+
+@Client.on_message(filters.group & filters.text)
+async def anti_link_handler(client, message):
+    if not message.from_user:
+        return
+
+    settings = await db.get_settings(message.chat.id)
+    if not settings.get("anti_link", True):
+        return
+
+    if LINK_REGEX.search(message.text):
+        try:
+            await message.delete()
+        except:
+            pass
+
+        warns = await warn_user(message.from_user.id, message.chat.id)
+
+        if warns >= MAX_WARNS:
+            until = datetime.utcnow() + timedelta(seconds=AUTO_MUTE_TIME)
+            try:
+                await client.restrict_chat_member(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    permissions=enums.ChatPermissions(),
+                    until_date=until
+                )
+            except:
+                pass
+
+            await reset_warn(message.from_user.id, message.chat.id)
+
+            await log_action(
+                client,
+                f"🔇 **Auto Mute Triggered**\n\n"
+                f"👤 User: {message.from_user.mention}\n"
+                f"🏷 Group: {message.chat.title}\n"
+                f"⏱ Duration: 10 minutes\n"
+                f"🕒 {ist_time()}"
+            )
+        else:
+            try:
+                await client.send_message(
+                    message.from_user.id,
+                    f"⚠️ **Warning {warns}/{MAX_WARNS}**\n\n"
+                    "Links are not allowed in this group."
+                )
+            except:
+                pass
+
+            await log_action(
+                client,
+                f"⚠️ **Link Violation**\n\n"
+                f"👤 User: {message.from_user.mention}\n"
+                f"🏷 Group: {message.chat.title}\n"
+                f"📊 Warns: {warns}/{MAX_WARNS}\n"
+                f"🕒 {ist_time()}"
+            )
+
+# =========================
+# SETTINGS MENU (ROSE STYLE)
+# =========================
+
+@Client.on_message(filters.command("settings") & filters.group)
+async def settings_entry(client, message):
+    if not message.from_user:
+        return
+
+    user_id = message.from_user.id
+    member = await client.get_chat_member(message.chat.id, user_id)
+
+    if member.status not in (
+        enums.ChatMemberStatus.ADMINISTRATOR,
+        enums.ChatMemberStatus.OWNER
+    ) and user_id not in ADMINS:
+        return await message.reply("❌ Admins only.")
+
+    await message.reply(
+        "⚙️ **Group Settings**\n\nManage from PM 👇",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🔐 Manage in PM",
+                    url=f"https://t.me/{client.me.username}?start=connect_{message.chat.id}"
+                )
+            ]
+        ])
+    )
+
+@Client.on_message(filters.command("connect") & filters.private)
+async def settings_pm(client, message):
+    if len(message.command) < 2:
+        return await message.reply("Run /settings in group first.")
+
+    chat_id = int(message.command[1])
+    settings = await db.get_settings(chat_id)
+
+    buttons = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🧹 Auto Delete",
+                callback_data=f"gs#auto_delete#{settings.get('auto_delete', True)}#{chat_id}"
+            ),
+            InlineKeyboardButton(
+                "✅ ON" if settings.get("auto_delete", True) else "❌ OFF",
+                callback_data=f"gs#auto_delete#{settings.get('auto_delete', True)}#{chat_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🚫 Anti Link",
+                callback_data=f"gs#anti_link#{settings.get('anti_link', True)}#{chat_id}"
+            ),
+            InlineKeyboardButton(
+                "✅ ON" if settings.get("anti_link", True) else "❌ OFF",
+                callback_data=f"gs#anti_link#{settings.get('anti_link', True)}#{chat_id}"
+            )
+        ]
+    ])
+
+    await message.reply("⚙️ **Moderation Settings**", reply_markup=buttons)
+
+@Client.on_callback_query(filters.regex("^gs#"))
+async def toggle_settings(client, query):
+    _, field, current, chat_id = query.data.split("#")
+    chat_id = int(chat_id)
+    new = current != "True"
 
     settings = await db.get_settings(chat_id)
-    settings[field] = new_status
+    settings[field] = new
     await db.update_settings(chat_id, settings)
-    
-    # बटन अपडेट करें
-    buttons = [
-        [
-            InlineKeyboardButton('IMDB', callback_data=f'setgs#imdb#{settings["imdb"]}#{chat_id}'),
-            InlineKeyboardButton('✅ ᴏɴ' if settings["imdb"] else '❌ ᴏꜰꜰ', callback_data=f'setgs#imdb#{settings["imdb"]}#{chat_id}')
-        ],
-        [
-            InlineKeyboardButton('sᴘᴇʟʟ ᴄʜᴇᴄᴋ', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{chat_id}'),
-            InlineKeyboardButton('✅ ᴏɴ' if settings["spell_check"] else '❌ ᴏꜰꜰ', callback_data=f'setgs#spell_check#{settings["spell_check"]}#{chat_id}')
-        ],
-        [
-            InlineKeyboardButton('ᴀᴜᴛᴏ ᴅᴇʟᴇᴛᴇ', callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{chat_id}'),
-            InlineKeyboardButton('✅ ᴏɴ' if settings["auto_delete"] else '❌ ᴏꜰꜰ', callback_data=f'setgs#auto_delete#{settings["auto_delete"]}#{chat_id}')
-        ],
-        [
-            InlineKeyboardButton('ᴡᴇʟᴄᴏᴍᴇ', callback_data=f'setgs#welcome#{settings["welcome"]}#{chat_id}'),
-            InlineKeyboardButton('✅ ᴏɴ' if settings["welcome"] else '❌ ᴏꜰꜰ', callback_data=f'setgs#welcome#{settings["welcome"]}#{chat_id}')
-        ]
-    ]
-    await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(buttons))
-    await query.answer("सेटिंग अपडेट हो गई है।")
+
+    await query.answer("✅ Updated")
