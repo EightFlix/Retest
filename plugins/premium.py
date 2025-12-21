@@ -1,4 +1,5 @@
 import qrcode
+import secrets
 from io import BytesIO
 from datetime import datetime, timedelta
 
@@ -17,6 +18,7 @@ from info import (
 
 from database.users_chats_db import db
 from utils import is_premium
+
 
 # ======================================================
 # 🔧 HELPERS
@@ -43,6 +45,22 @@ def parse_duration(text: str):
     if "year" in text:
         return timedelta(days=365 * num)
     return None
+
+
+def generate_invoice_id():
+    return "PRM-" + secrets.token_hex(3).upper()
+
+
+def build_invoice_text(inv: dict) -> str:
+    return (
+        "🧾 **PAYMENT INVOICE**\n\n"
+        f"🆔 Invoice ID : `{inv['id']}`\n"
+        f"💎 Plan       : {inv['plan']}\n"
+        f"💰 Amount     : ₹{inv['amount']}\n"
+        f"🕒 Activated  : {inv['activated']}\n"
+        f"⏰ Valid Till : {inv['expire']}\n\n"
+        "Thank you for your purchase 💙"
+    )
 
 
 def user_buttons(is_prm: bool):
@@ -105,7 +123,7 @@ async def myplan_cmd(_, message):
 
 
 # ======================================================
-# 📨 TRIAL REQUEST
+# 📨 TRIAL REQUEST (ADMIN DECIDES)
 # ======================================================
 
 @Client.on_callback_query(filters.regex("^request_trial$"))
@@ -136,13 +154,12 @@ async def buy_premium(_, query: CallbackQuery):
     db.update_plan(query.from_user.id, {
         "last_msg_id": None,
         "last_reminder": None
-    )
+    })
 
-    # One-click renew support
     last_plan = db.get_plan(query.from_user.id).get("last_plan")
 
-    ask = (
-        f"⏳ **Choose Premium Duration**\n\n"
+    await query.message.edit(
+        "⏳ **Choose Premium Duration**\n\n"
         f"{'Last Plan: ' + last_plan + '\\n' if last_plan else ''}"
         "Send duration like:\n"
         "`10 minutes`\n"
@@ -151,8 +168,6 @@ async def buy_premium(_, query: CallbackQuery):
         "`1 month`\n"
         "`1 year`"
     )
-
-    await query.message.edit(ask)
 
     try:
         msg = await query._client.listen(
@@ -226,7 +241,7 @@ async def buy_premium(_, query: CallbackQuery):
 
 
 # ======================================================
-# 🛂 ADMIN DECISION
+# 🛂 ADMIN DECISION + INVOICE
 # ======================================================
 
 @Client.on_callback_query(filters.regex("^pay_ok"))
@@ -256,6 +271,18 @@ async def admin_ok(_, query: CallbackQuery):
 
     now = datetime.utcnow()
     expire = now + duration
+    invoice_id = generate_invoice_id()
+
+    amount = PRE_DAY_AMOUNT * max(1, duration.days)
+
+    invoice = {
+        "id": invoice_id,
+        "plan": msg.text,
+        "amount": amount,
+        "activated": format_time(now),
+        "expire": format_time(expire),
+        "created_at": now,
+    }
 
     db.update_plan(
         user_id,
@@ -264,6 +291,7 @@ async def admin_ok(_, query: CallbackQuery):
             "plan": msg.text,
             "activated_at": now,
             "expire": expire,
+            "invoice": invoice,
             "last_msg_id": None,
             "last_reminder": None,
         },
@@ -274,7 +302,12 @@ async def admin_ok(_, query: CallbackQuery):
         "🎉 **Premium Activated!**\n\n"
         f"💎 Plan: {msg.text}\n"
         f"🕒 Activated At: {format_time(now)}\n"
-        f"⏰ Valid Till: {format_time(expire)}",
+        f"⏰ Valid Till: {format_time(expire)}"
+    )
+
+    await query._client.send_message(
+        user_id,
+        build_invoice_text(invoice)
     )
 
     await query.message.edit("✅ Premium activated successfully.")
