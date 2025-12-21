@@ -1,165 +1,268 @@
-import os
-import qrcode
 import asyncio
+import qrcode
+from io import BytesIO
 from datetime import datetime, timedelta
+
 from hydrogram import Client, filters
 from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from hydrogram.errors import ListenerTimeout
 
 from info import (
-    ADMINS, IS_PREMIUM, PRE_DAY_AMOUNT, UPI_ID, UPI_NAME, 
-    RECEIPT_SEND_USERNAME, script
+    ADMINS,
+    IS_PREMIUM,
+    PRE_DAY_AMOUNT,
+    UPI_ID,
+    UPI_NAME,
+    RECEIPT_SEND_USERNAME,
+    script
 )
+
 from database.users_chats_db import db
-from utils import is_premium, get_readable_time, temp
+from utils import is_premium, temp
 
-# --- Commands ---
+# ======================================================
+# 🔹 HELPERS (DRY – single source of truth)
+# ======================================================
 
-@Client.on_message(filters.command('plan') & filters.private)
-async def plan_cmd(client, message):
+def format_time(dt: datetime) -> str:
+    return dt.strftime("%d %b %Y, %I:%M %p")
+
+def parse_duration(text: str) -> timedelta | None:
+    text = text.lower().strip()
+    num = int("".join(filter(str.isdigit, text)) or 0)
+
+    if "min" in text:
+        return timedelta(minutes=num)
+    if "hour" in text or "hr" in text:
+        return timedelta(hours=num)
+    if "day" in text:
+        return timedelta(days=num)
+    if "month" in text:
+        return timedelta(days=30 * num)
+    if "year" in text:
+        return timedelta(days=365 * num)
+    return None
+
+def build_plan_buttons(is_prm: bool):
+    if is_prm:
+        return None
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 Buy Premium", callback_data="buy_premium")],
+        [InlineKeyboardButton("📨 Request Trial", callback_data="request_trial")]
+    ])
+
+# ======================================================
+# 👤 USER COMMANDS
+# ======================================================
+
+@Client.on_message(filters.command("plan") & filters.private)
+async def plan_cmd(_, message):
     if not IS_PREMIUM:
-        return await message.reply('प्रीमियम फीचर अभी एडमिन द्वारा बंद किया गया है।')
-    
-    # एडमिन को प्लान दिखाने के बजाय सीधा मैसेज
+        return await message.reply("⚠️ Premium system is currently disabled.")
+
     if message.from_user.id in ADMINS:
-        return await message.reply("👑 **आप बॉट ओनर हैं!**\nआपके पास पहले से ही अनलिमिटेड प्रीमियम एक्सेस है।")
-
-    btn = [[
-        InlineKeyboardButton('Activate Trial (1h)', callback_data='activate_trial')
-    ],[
-        InlineKeyboardButton('Activate Premium Plan', callback_data='activate_plan')
-    ]]
-    await message.reply_text(
-        script.PLAN_TXT.format(PRE_DAY_AMOUNT, RECEIPT_SEND_USERNAME), 
-        reply_markup=InlineKeyboardMarkup(btn)
-    )
-
-@Client.on_message(filters.command('myplan') & filters.private)
-async def myplan_cmd(client, message):
-    if not IS_PREMIUM:
-        return await message.reply('प्रीमियम फीचर डिसेबल है।')
-    
-    user_id = message.from_user.id
-    # एडमिन के लिए विशेष रिस्पॉन्स
-    if user_id in ADMINS:
-        return await message.reply("👑 **आप बॉट ओनर हैं!**\nप्लान: `Lifetime Premium` \nसमाप्ति तिथि: `Never`")
-    
-    if not await is_premium(user_id, client):
-        btn = [[
-            InlineKeyboardButton('Activate Trial', callback_data='activate_trial'),
-            InlineKeyboardButton('Activate Plan', callback_data='activate_plan')
-        ]]
         return await message.reply(
-            'आपके पास कोई सक्रिय प्रीमियम प्लान नहीं है।', 
-            reply_markup=InlineKeyboardMarkup(btn)
+            "👑 **Admin Access**\nYou already have unlimited premium access."
         )
-    
-    mp = db.get_plan(user_id)
-    expiry_date = mp.get('expire')
-    
-    # strftime एरर फिक्स: चेक करें कि डेटा स्ट्रिंग है या datetime object
-    if isinstance(expiry_date, datetime):
-        expiry = expiry_date.strftime('%Y.%m.%d %H:%M:%S')
-    else:
-        expiry = str(expiry_date) if expiry_date else "असीमित"
 
-    await message.reply(f"आपका सक्रिय प्लान: {mp.get('plan', 'Premium')}\nसमाप्ति तिथि: {expiry}")
+    premium = await is_premium(message.from_user.id, message._client)
 
-@Client.on_message(filters.command('add_prm') & filters.user(ADMINS))
-async def add_premium_admin(bot, message):
-    try:
-        args = message.text.split(' ')
-        user_id = int(args[1])
-        duration = args[2]
-        days = int(duration[:-1]) 
-    except:
-        return await message.reply('उपयोग: `/add_prm user_id 7d`')
-
-    try:
-        user = await bot.get_users(user_id)
-    except Exception as e:
-        return await message.reply(f'एरर: {e}')
-
-    mp = db.get_plan(user.id)
-    expiry = datetime.now() + timedelta(days=days)
-    mp.update({'expire': expiry, 'plan': f'{days} Days', 'premium': True})
-    
-    db.update_plan(user.id, mp)
-    await message.reply(f"प्रदान किया गया: {user.mention}\nसमाप्ति: {expiry.strftime('%Y.%m.%d %H:%M:%S')}")
-    try:
-        await bot.send_message(user.id, f"बधाई हो! आपका प्रीमियम सक्रिय हो गया है।\nसमाप्ति: {expiry.strftime('%Y.%m.%d %H:%M:%S')}")
-    except: pass
-
-@Client.on_message(filters.command('rm_prm') & filters.user(ADMINS))
-async def remove_premium_admin(bot, message):
-    try:
-        user_id = int(message.text.split(' ')[1])
-    except:
-        return await message.reply('उपयोग: `/rm_prm user_id`')
-
-    mp = db.get_plan(user_id)
-    mp.update({'expire': '', 'plan': '', 'premium': False})
-    db.update_plan(user_id, mp)
-    await message.reply("यूजर को प्रीमियम लिस्ट से हटा दिया गया है।")
-
-@Client.on_message(filters.command('prm_list') & filters.user(ADMINS))
-async def premium_list_admin(bot, message):
-    tx = await message.reply('लिस्ट निकाली जा रही है...')
-    users = db.get_premium_users()
-    text = 'प्रीमियम यूजर्स:\n\n'
-    count = 0
-    for u_data in users:
-        if u_data.get('status', {}).get('premium'):
-            text += f"ID: `{u_data['id']}` | प्लान: {u_data['status']['plan']}\n"
-            count += 1
-    if count == 0:
-        await tx.edit_text("कोई प्रीमियम यूजर नहीं मिला।")
-    else:
-        await tx.edit_text(text)
-
-# --- Callbacks ---
-
-@Client.on_callback_query(filters.regex('^activate_trial'))
-async def trial_callback(bot, query: CallbackQuery):
-    mp = db.get_plan(query.from_user.id)
-    if mp.get('trial'):
-        return await query.answer('आपने पहले ही ट्रायल इस्तेमाल कर लिया है।', show_alert=True)
-    
-    ex = datetime.now() + timedelta(hours=1)
-    mp.update({'expire': ex, 'trial': True, 'plan': '1 Hour Trial', 'premium': True})
-    db.update_plan(query.from_user.id, mp)
-    await query.message.edit(f"ट्रायल सक्रिय! 1 घंटे के लिए।\nसमाप्ति: {ex.strftime('%H:%M:%S')}")
-
-@Client.on_callback_query(filters.regex('^activate_plan'))
-async def plan_activation_callback(bot, query: CallbackQuery):
-    await query.message.edit('कितने दिनों का प्रीमियम चाहिए? (केवल संख्या भेजें, जैसे: 7)')
-    try:
-        msg = await bot.listen(chat_id=query.message.chat.id, user_id=query.from_user.id, timeout=300)
-        days = int(msg.text)
-    except (ListenerTimeout, ValueError):
-        return await query.message.reply('समय समाप्त या अमान्य संख्या। फिर से प्रयास करें।')
-
-    amount = days * PRE_DAY_AMOUNT
-    note = f"{days} days premium for {query.from_user.id}"
-    upi_uri = f"upi://pay?pa={UPI_ID}&pn={UPI_NAME}&am={amount}&cu=INR&tn={note}"
-    
-    qr = qrcode.make(upi_uri)
-    path = f"qr_{query.from_user.id}.png"
-    qr.save(path)
-    
-    await query.message.reply_photo(
-        path, 
-        caption=f"प्लान: {days} दिन\nराशि: ₹{amount}\n\nइस QR को स्कैन करके भुगतान करें और रसीद का फोटो यहाँ भेजें (10 मिनट में)।"
+    text = (
+        "💎 **Premium Plans**\n\n"
+        "Upgrade to premium and enjoy:\n"
+        "🚀 Faster Access\n"
+        "🔓 No Ads\n"
+        "📩 PM Search Enabled\n"
     )
-    if os.path.exists(path):
-        os.remove(path)
+
+    await message.reply(
+        text,
+        reply_markup=build_plan_buttons(premium)
+    )
+
+@Client.on_message(filters.command("myplan") & filters.private)
+async def myplan_cmd(_, message):
+    if message.from_user.id in ADMINS:
+        return await message.reply(
+            "👑 **Admin Plan**\nPlan: Lifetime Premium\nExpires: Never"
+        )
+
+    if not await is_premium(message.from_user.id, message._client):
+        return await message.reply(
+            "❌ You do not have an active premium plan.\nUse /plan to upgrade."
+        )
+
+    mp = db.get_plan(message.from_user.id)
+    expire = mp.get("expire")
+
+    await message.reply(
+        "🎉 **Premium Active**\n\n"
+        f"💎 Plan: {mp.get('plan','Premium')}\n"
+        f"⏰ Valid Till: {format_time(expire)}"
+    )
+
+# ======================================================
+# 📨 TRIAL REQUEST (ADMIN DECIDES)
+# ======================================================
+
+@Client.on_callback_query(filters.regex("^request_trial$"))
+async def trial_request(_, query: CallbackQuery):
+    await query.answer("Trial request sent to admin.", show_alert=True)
+
+    await query.message.edit(
+        "📨 **Trial Requested**\n\n"
+        "Your request has been sent to the admin.\n"
+        "You will be notified if approved."
+    )
+
+    await query._client.send_message(
+        ADMINS[0],
+        f"#TrialRequest\n"
+        f"👤 User: {query.from_user.mention}\n"
+        f"🆔 ID: `{query.from_user.id}`"
+    )
+
+# ======================================================
+# 💰 BUY PREMIUM FLOW
+# ======================================================
+
+@Client.on_callback_query(filters.regex("^buy_premium$"))
+async def buy_premium(_, query: CallbackQuery):
+    await query.message.edit(
+        "⏳ **Choose Duration**\n\n"
+        "Send duration like:\n"
+        "`10 minutes`\n"
+        "`3 hours`\n"
+        "`7 days`\n"
+        "`1 month`\n"
+        "`1 year`"
+    )
 
     try:
-        receipt = await bot.listen(chat_id=query.message.chat.id, user_id=query.from_user.id, timeout=600)
-        if receipt.photo:
-            await receipt.reply('आपकी रसीद एडमिन को भेज दी गई है। कृपया सत्यापन का इंतज़ार करें।')
-            await bot.send_photo(RECEIPT_SEND_USERNAME, receipt.photo.file_id, caption=f"#NewPayment\nUser: {query.from_user.mention}\nNote: {note}")
-        else:
-            await receipt.reply('कृपया फोटो भेजें। सहायता के लिए एडमिन से संपर्क करें।')
-    except ListenerTimeout:
-        await query.message.reply('भुगतान रसीद भेजने का समय समाप्त हो गया।')
+        msg = await query._client.listen(
+            chat_id=query.message.chat.id,
+            user_id=query.from_user.id,
+            timeout=300
+        )
+        duration = parse_duration(msg.text)
+        if not duration:
+            raise ValueError
+    except (ListenerTimeout, ValueError):
+        return await query.message.reply("❌ Invalid or timed out. Try again.")
+
+    days = max(1, duration.days)
+    amount = days * PRE_DAY_AMOUNT
+
+    note = f"Premium for {query.from_user.id}"
+    upi = f"upi://pay?pa={UPI_ID}&pn={UPI_NAME}&am={amount}&cu=INR&tn={note}"
+
+    qr_img = qrcode.make(upi)
+    bio = BytesIO()
+    bio.name = "payment.png"
+    qr_img.save(bio, "PNG")
+    bio.seek(0)
+
+    await query.message.reply_photo(
+        bio,
+        caption=(
+            "💰 **Complete Payment**\n\n"
+            f"🕒 Requested: {msg.text}\n"
+            f"💵 Amount: ₹{amount}\n\n"
+            "Scan the QR and send payment screenshot."
+        )
+    )
+
+    try:
+        receipt = await query._client.listen(
+            chat_id=query.message.chat.id,
+            user_id=query.from_user.id,
+            timeout=600
+        )
+        if not receipt.photo:
+            raise ValueError
+    except Exception:
+        return await query.message.reply("❌ Screenshot not received. Try again.")
+
+    await receipt.reply("✅ Screenshot received.\n⏳ Waiting for admin approval.")
+
+    admin_buttons = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Payment Received", callback_data=f"pay_ok#{query.from_user.id}"),
+            InlineKeyboardButton("❌ Payment Not Received", callback_data=f"pay_no#{query.from_user.id}")
+        ]
+    ])
+
+    await query._client.send_photo(
+        RECEIPT_SEND_USERNAME,
+        receipt.photo.file_id,
+        caption=(
+            "#PremiumPayment\n"
+            f"👤 User: {query.from_user.mention}\n"
+            f"🆔 ID: `{query.from_user.id}`\n"
+            f"💵 Amount: ₹{amount}"
+        ),
+        reply_markup=admin_buttons
+    )
+
+# ======================================================
+# 🛂 ADMIN PAYMENT DECISION
+# ======================================================
+
+@Client.on_callback_query(filters.regex("^pay_ok"))
+async def admin_payment_ok(_, query: CallbackQuery):
+    if query.from_user.id not in ADMINS:
+        return await query.answer("Not allowed", show_alert=True)
+
+    user_id = int(query.data.split("#")[1])
+
+    await query.message.reply(
+        "⏳ **Activate Premium**\n\n"
+        "Send duration like:\n"
+        "`1 day`, `1 month`, `1 year`, `3 hours`"
+    )
+
+    try:
+        msg = await query._client.listen(
+            chat_id=query.message.chat.id,
+            user_id=query.from_user.id,
+            timeout=300
+        )
+        duration = parse_duration(msg.text)
+        if not duration:
+            raise ValueError
+    except Exception:
+        return await query.message.reply("❌ Invalid duration.")
+
+    expire = datetime.now() + duration
+    db.update_plan(
+        user_id,
+        {
+            "premium": True,
+            "plan": msg.text,
+            "expire": expire
+        }
+    )
+
+    await query._client.send_message(
+        user_id,
+        "🎉 **Premium Activated!**\n\n"
+        f"💎 Plan: {msg.text}\n"
+        f"⏰ Valid Till: {format_time(expire)}"
+    )
+
+    await query.message.edit("✅ Premium activated successfully.")
+
+@Client.on_callback_query(filters.regex("^pay_no"))
+async def admin_payment_no(_, query: CallbackQuery):
+    if query.from_user.id not in ADMINS:
+        return await query.answer("Not allowed", show_alert=True)
+
+    user_id = int(query.data.split("#")[1])
+
+    await query._client.send_message(
+        user_id,
+        "❌ **Payment Not Received**\n\n"
+        "If you have completed the payment, please contact the admin."
+    )
+
+    await query.message.edit("❌ Payment marked as not received.")
