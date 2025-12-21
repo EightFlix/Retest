@@ -10,10 +10,15 @@ from hydrogram.types import InlineKeyboardButton
 from info import (
     ADMINS,
     IS_PREMIUM,
-    TIME_ZONE,
-    SHORTLINK_API,
-    SHORTLINK_URL
+    TIME_ZONE
 )
+
+# ---- OPTIONAL SHORTLINK CONFIG (SAFE IMPORT) ----
+try:
+    from info import SHORTLINK_API, SHORTLINK_URL
+except ImportError:
+    SHORTLINK_API = None
+    SHORTLINK_URL = None
 
 from database.users_chats_db import db
 from shortzy import Shortzy
@@ -124,11 +129,11 @@ async def update_verify_status(user_id, **kwargs):
 
 
 # ======================================================
-# 👑 PREMIUM CHECK (SYNCED WITH premium.py)
+# 👑 PREMIUM CHECK (SYNCED)
 # ======================================================
 
 async def is_premium(user_id, bot=None) -> bool:
-    # global off OR admin
+    # admin OR global off
     if not IS_PREMIUM or user_id in ADMINS:
         return True
 
@@ -149,7 +154,7 @@ async def is_premium(user_id, bot=None) -> bool:
     if now <= expire + GRACE_PERIOD:
         return True
 
-    # hard expiry → cleanup
+    # hard expiry cleanup
     mp.update({
         "premium": False,
         "plan": "",
@@ -165,10 +170,6 @@ async def is_premium(user_id, bot=None) -> bool:
 # ======================================================
 
 async def check_premium(bot):
-    """
-    Lightweight background safety loop.
-    UI & reminders handled in premium.py
-    """
     while True:
         try:
             users = db.get_premium_users()
@@ -250,6 +251,9 @@ def get_size(size):
 
 
 async def get_shortlink(url, api, link):
+    # SAFE fallback
+    if not api or not url:
+        return link
     shortzy = Shortzy(api_key=api, base_site=url)
     return await shortzy.convert(link)
 
