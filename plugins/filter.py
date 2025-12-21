@@ -10,7 +10,7 @@ from utils import get_settings, get_size, is_premium, temp
 
 # ===================== ⚡ SAFE CACHE =====================
 SEARCH_CACHE = {}     # key -> (files, n_offset, total, ts)
-CACHE_TTL = 45        # seconds (safe)
+CACHE_TTL = 45        # seconds
 
 RE_CLEAN = re.compile(r"[-:\"';!]")
 RE_SPACE = re.compile(r"\s+")
@@ -46,18 +46,15 @@ async def filter_handler(client, message):
 
 # ===================== 🔎 AUTO FILTER =====================
 async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=False):
-    settings = await get_settings(message.chat.id)
-    result_mode = settings.get("result_mode", "button")  # button | link
-
     cache_key = f"{search}:{offset}"
     cached = SEARCH_CACHE.get(cache_key)
 
-    # ---- CACHE SAFE LOAD ----
+    # ---- CACHE ----
     if cached and time.time() - cached[3] < CACHE_TTL:
         files, n_offset, total = cached[:3]
     else:
         files, n_offset, total = await get_search_results(search, offset)
-        if files:  # ❗ empty result cache मत करो
+        if files:
             SEARCH_CACHE[cache_key] = (files, n_offset, total, time.time())
 
     if not files:
@@ -68,26 +65,19 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
 
     buttons = []
 
-    # ================= FILE RESULTS =================
+    # ================= FILE RESULTS (LINK MODE ONLY) =================
     for file in files:
         clean_name = re.sub(r'^[a-zA-Z0-9]+>', '', file['file_name']).strip()
         f_size = get_size(file['file_size'])
 
-        if result_mode == "link":
-            link = f"https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{file['_id']}"
-            buttons.append([
-                InlineKeyboardButton(
-                    f"📁 [{f_size}] {clean_name}",
-                    url=link
-                )
-            ])
-        else:
-            buttons.append([
-                InlineKeyboardButton(
-                    f"📁 [{f_size}] {clean_name}",
-                    callback_data=f"file#{file['_id']}"
-                )
-            ])
+        link = f"https://t.me/{temp.U_NAME}?start=file_{message.chat.id}_{file['_id']}"
+
+        buttons.append([
+            InlineKeyboardButton(
+                f"📁 [{f_size}] {clean_name}",
+                url=link
+            )
+        ])
 
     # ================= PAGINATION =================
     page_btn = []
@@ -130,7 +120,10 @@ async def auto_filter(client, message, reply_msg, search, offset=0, is_edit=Fals
     )
 
     if is_edit:
-        await reply_msg.edit_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
+        await reply_msg.edit_text(
+            caption,
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
     else:
         await message.reply_text(
             caption,
