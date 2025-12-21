@@ -22,6 +22,9 @@ from info import API_ID, API_HASH, BOT_TOKEN, PORT, LOG_CHANNEL, ADMINS
 from utils import temp, check_premium
 from database.users_chats_db import db
 
+# 🔴 IMPORTANT: banned worker import
+from plugins.banned import auto_unban_worker
+
 
 # ==========================
 # 🕒 TIME UTILS
@@ -57,7 +60,9 @@ class Bot(Client):
             with open("restart.txt") as f:
                 try:
                     cid, mid = map(int, f.read().split())
-                    await self.edit_message_text(cid, mid, "✅ Bot Restarted Successfully!")
+                    await self.edit_message_text(
+                        cid, mid, "✅ Bot Restarted Successfully!"
+                    )
                 except:
                     pass
             os.remove("restart.txt")
@@ -72,8 +77,15 @@ class Bot(Client):
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", PORT).start()
 
-        # ---- background safety task ----
+        # ==========================
+        # 🔁 BACKGROUND TASKS
+        # ==========================
+
+        # Premium expiry safety
         asyncio.create_task(check_premium(self))
+
+        # Auto unban worker (TEMPBAN / SOFTBAN)
+        asyncio.create_task(auto_unban_worker(self))
 
         # ---- admin notify ----
         for admin in ADMINS:
