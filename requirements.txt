@@ -1,4 +1,4 @@
-hydrogram>=0.4.6
+hydrogram==0.2.0
 tgcrypto
 pymongo>=4.6.0
 aiohttp>=3.9.0
@@ -9,4 +9,3 @@ qrcode
 Pillow
 pytz
 shortzy
-speedtest-cli
