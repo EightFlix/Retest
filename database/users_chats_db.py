@@ -82,12 +82,32 @@ class Database:
     async def ban_user(self, user_id, until, reason=""):
         self.bans.update_one(
             {"id": user_id},
-            {"$set": {"until": until, "reason": reason}},
+            {"$set": {
+                "until": until,
+                "reason": reason
+            }},
             upsert=True
         )
 
     async def unban_user(self, user_id):
         self.bans.delete_one({"id": user_id})
+
+    # 🔥 MISSING METHOD FIX (IMPORTANT)
+    async def get_ban_status(self, user_id: int):
+        ban = self.bans.find_one({"id": user_id})
+        if not ban:
+            return {"status": False, "reason": ""}
+
+        # auto remove expired ban
+        if ban.get("until", 0) <= time.time():
+            self.bans.delete_one({"id": user_id})
+            return {"status": False, "reason": ""}
+
+        return {
+            "status": True,
+            "reason": ban.get("reason", ""),
+            "until": ban.get("until")
+        }
 
     # =========================
     # 👥 GROUPS
