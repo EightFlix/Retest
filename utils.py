@@ -39,9 +39,12 @@ class temp(object):
     SETTINGS = {}
     VERIFICATIONS = {}
 
-    FILES = {}          # msg_id -> data
+    FILES = {}          # msg_id -> delivery data
     PREMIUM = {}        # ⚡ RAM premium cache
-    KEYWORDS = {}       # 🧠 auto-learned keywords
+    KEYWORDS = {}       # 🧠 learned search keywords (RAM)
+
+    LANG_USER = {}      # user_id -> hi/en
+    LANG_GROUP = {}     # group_id -> hi/en
 
     INDEX_STATS = {
         "running": False,
@@ -80,10 +83,7 @@ async def is_premium(user_id, bot=None) -> bool:
     # ---- DB FALLBACK ----
     plan = db.get_plan(user_id)
     if not plan or not plan.get("premium"):
-        temp.PREMIUM[user_id] = {
-            "expire": None,
-            "checked_at": now_ts
-        }
+        temp.PREMIUM[user_id] = {"expire": None, "checked_at": now_ts}
         return False
 
     expire = plan.get("expire")
@@ -98,16 +98,10 @@ async def is_premium(user_id, bot=None) -> bool:
             "last_reminder": "expired"
         })
         db.update_plan(user_id, plan)
-        temp.PREMIUM[user_id] = {
-            "expire": None,
-            "checked_at": now_ts
-        }
+        temp.PREMIUM[user_id] = {"expire": None, "checked_at": now_ts}
         return False
 
-    temp.PREMIUM[user_id] = {
-        "expire": expire,
-        "checked_at": now_ts
-    }
+    temp.PREMIUM[user_id] = {"expire": expire, "checked_at": now_ts}
     return True
 
 
@@ -119,7 +113,6 @@ async def check_premium(bot):
     while True:
         try:
             now = datetime.utcnow()
-
             for u in db.get_premium_users():
                 uid = u["id"]
                 if uid in ADMINS:
@@ -140,8 +133,6 @@ async def check_premium(bot):
                         "plan": ""
                     })
                     db.update_plan(uid, plan)
-
-                    # clear RAM cache
                     temp.PREMIUM.pop(uid, None)
 
         except Exception:
@@ -188,7 +179,7 @@ async def premium_expiry_reminder(bot):
                         try:
                             await bot.send_message(
                                 uid,
-                                f"⏰ **Premium Expiry Alert**\n\n"
+                                "⏰ **Premium Expiry Alert**\n\n"
                                 f"Your premium will expire in **{tag}**.\n"
                                 "Renew now to avoid interruption."
                             )
@@ -206,7 +197,7 @@ async def premium_expiry_reminder(bot):
 
 
 # ======================================================
-# 🧠 SMART SEARCH LEARNING (OFFLINE)
+# 🧠 SMART SEARCH LEARNING (OFFLINE / FAST)
 # ======================================================
 
 def learn_keywords(text: str):
@@ -218,16 +209,20 @@ def learn_keywords(text: str):
 def fast_similarity(a: str, b: str) -> int:
     if a == b:
         return 100
+
     a_set = set(a.split())
     b_set = set(b.split())
     common = a_set & b_set
     if not common:
         return 0
+
     score = int((len(common) / max(len(a_set), len(b_set))) * 100)
+
     for x in a_set:
         for y in b_set:
             if x.startswith(y) or y.startswith(x):
                 score += 10
+
     return min(score, 100)
 
 
@@ -241,6 +236,26 @@ def suggest_query(query: str):
 
 
 # ======================================================
+# 🌍 LANGUAGE HELPERS (LIGHTWEIGHT)
+# ======================================================
+
+def set_user_lang(user_id: int, lang: str):
+    temp.LANG_USER[user_id] = lang
+
+
+def set_group_lang(group_id: int, lang: str):
+    temp.LANG_GROUP[group_id] = lang
+
+
+def get_lang(user_id: int = None, group_id: int = None, default="en"):
+    if user_id and user_id in temp.LANG_USER:
+        return temp.LANG_USER[user_id]
+    if group_id and group_id in temp.LANG_GROUP:
+        return temp.LANG_GROUP[group_id]
+    return default
+
+
+# ======================================================
 # 🎉 FESTIVAL + SMART GREETING
 # ======================================================
 
@@ -251,9 +266,18 @@ FESTIVALS = {
 }
 
 FESTIVAL_MSG = {
-    "holi": "🎨 Happy Holi | होली मुबारक",
-    "diwali": "🪔 Happy Diwali | दीपावली मुबारक",
-    "eid": "🌙 Eid Mubarak | ईद मुबारक"
+    "holi": {
+        "en": "🎨 Happy Holi",
+        "hi": "🎨 होली मुबारक"
+    },
+    "diwali": {
+        "en": "🪔 Happy Diwali",
+        "hi": "🪔 दीपावली मुबारक"
+    },
+    "eid": {
+        "en": "🌙 Eid Mubarak",
+        "hi": "🌙 ईद मुबारक"
+    }
 }
 
 EMOJI_DAY = ["🌞", "✨", "🌤"]
@@ -265,19 +289,23 @@ def detect_festival():
     return FESTIVALS.get((now.month, now.day))
 
 
-def get_wish(user_name: str = None):
+def get_wish(user_name: str = None, lang="en", premium=False):
     fest = detect_festival()
     if fest:
-        return FESTIVAL_MSG.get(fest)
+        return FESTIVAL_MSG.get(fest, {}).get(lang)
 
     hour = datetime.now(pytz.timezone(TIME_ZONE)).hour
     name = f", {user_name}" if user_name else ""
+    emoji = random.choice(EMOJI_DAY if hour < 18 else EMOJI_NIGHT)
+
+    if premium:
+        emoji = "👑 " + emoji
 
     if hour < 12:
-        return f"{random.choice(EMOJI_DAY)} Good Morning{name}"
+        return f"{emoji} {'सुप्रभात' if lang=='hi' else 'Good Morning'}{name}"
     if hour < 18:
-        return f"{random.choice(EMOJI_DAY)} Good Afternoon{name}"
-    return f"{random.choice(EMOJI_NIGHT)} Good Evening{name}"
+        return f"{emoji} {'नमस्ते' if lang=='hi' else 'Good Afternoon'}{name}"
+    return f"{emoji} {'शुभ रात्रि' if lang=='hi' else 'Good Evening'}{name}"
 
 
 # ======================================================
