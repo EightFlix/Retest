@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 
 from hydrogram import Client, filters
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from hydrogram.enums import ChatType
 
 from info import IS_STREAM, PM_FILE_DELETE_TIME, PROTECT_CONTENT, ADMINS
 from database.ia_filterdb import get_file_details
@@ -17,12 +16,11 @@ from utils import get_settings, get_size, get_shortlink, temp
 # ======================================================
 
 GRACE_PERIOD = timedelta(minutes=30)
-RESEND_EXPIRE_TIME = 60   # seconds
-ANTI_SPAM_DELAY = 1.5    # seconds (IMPORTANT)
+RESEND_EXPIRE_TIME = 60  # seconds
 
 
 # ======================================================
-# PREMIUM / GRACE CHECK
+# PREMIUM CHECK
 # ======================================================
 
 async def has_premium_or_grace(user_id: int) -> bool:
@@ -41,7 +39,7 @@ async def has_premium_or_grace(user_id: int) -> bool:
 
 
 # ======================================================
-# GROUP FILE BUTTON
+# FILE BUTTON (GROUP)
 # ======================================================
 
 @Client.on_callback_query(filters.regex(r"^file#"))
@@ -55,7 +53,7 @@ async def file_button_handler(client: Client, query: CallbackQuery):
     settings = await get_settings(query.message.chat.id)
     uid = query.from_user.id
 
-    # FREE → SHORTLINK
+    # FREE USER → SHORTLINK
     if settings.get("shortlink") and not await has_premium_or_grace(uid):
         link = await get_shortlink(
             settings.get("url"),
@@ -71,54 +69,31 @@ async def file_button_handler(client: Client, query: CallbackQuery):
             ])
         )
 
-    # PREMIUM → PM
+    # PREMIUM → DIRECT PM
     await query.answer(
         url=f"https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file_id}"
     )
 
 
 # ======================================================
-# /START FILE DELIVERY (ANTI SPAM)
+# /START FILE DELIVERY (PM)
 # ======================================================
 
 @Client.on_message(
-    filters.private
-    & filters.command("start")
-    & filters.regex(r"file_")
-    & filters.incoming
+    filters.private &
+    filters.command("start") &
+    filters.regex(r"file_")
 )
 async def start_file_delivery(client: Client, message):
-    uid = message.from_user.id
-
-    # 🔥 HARD ANTI-SPAM (MOST IMPORTANT FIX)
-    now = time.time()
-    last = temp.VERIFICATIONS.get(uid)
-
-    if last and now - last < ANTI_SPAM_DELAY:
-        try:
-            await message.delete()
-        except:
-            pass
-        return
-
-    temp.VERIFICATIONS[uid] = now
-
     try:
         _, grp_id, file_id = message.text.split("_", 2)
         grp_id = int(grp_id)
     except:
-        try:
-            await message.delete()
-        except:
-            pass
         return
 
-    # 🔥 shield = bot never freezes
-    await asyncio.shield(
-        deliver_file(client, uid, grp_id, file_id)
-    )
+    await deliver_file(client, message.from_user.id, grp_id, file_id)
 
-    # always delete /start
+    # 🔥 ALWAYS DELETE /start
     try:
         await message.delete()
     except:
@@ -126,7 +101,7 @@ async def start_file_delivery(client: Client, message):
 
 
 # ======================================================
-# CORE DELIVERY
+# CORE DELIVERY (NO FILE AUTO DELETE ON NEW CLICK)
 # ======================================================
 
 async def deliver_file(client, uid, grp_id, file_id):
@@ -135,30 +110,20 @@ async def deliver_file(client, uid, grp_id, file_id):
         return
 
     settings = await get_settings(grp_id)
+
     if settings.get("shortlink") and not await has_premium_or_grace(uid):
         return
 
     # ==================================================
-    # ONE FILE AT A TIME PER USER
+    # CLEAN CAPTION (NO DUPLICATE EVER)
     # ==================================================
-    for k, v in list(temp.FILES.items()):
-        if v.get("owner") == uid:
-            try:
-                await v["file"].delete()
-            except:
-                pass
-            temp.FILES.pop(k, None)
+    file_name = (file.get("file_name") or "").strip()
+    file_caption = (file.get("caption") or "").strip()
 
-    # ==================================================
-    # CLEAN CAPTION (NO DUPLICATE)
-    # ==================================================
-    file_name = file.get("file_name", "").strip()
-    file_cap = (file.get("caption") or "").strip()
-
-    if file_cap == file_name or not file_cap:
+    if not file_caption or file_caption == file_name:
         caption = file_name
     else:
-        caption = f"{file_name}\n\n{file_cap}"
+        caption = f"{file_name}\n\n{file_caption}"
 
     # ==================================================
     # BUTTONS
@@ -180,6 +145,9 @@ async def deliver_file(client, uid, grp_id, file_id):
         reply_markup=markup
     )
 
+    # ==================================================
+    # TRACK FILE (INDEPENDENT SESSION)
+    # ==================================================
     temp.FILES[sent.id] = {
         "owner": uid,
         "file": sent,
@@ -187,7 +155,7 @@ async def deliver_file(client, uid, grp_id, file_id):
     }
 
     # ==================================================
-    # SILENT AUTO DELETE (NO CAPTION EDIT)
+    # AUTO DELETE ONLY AFTER EXPIRY
     # ==================================================
     await asyncio.sleep(PM_FILE_DELETE_TIME)
 
@@ -230,6 +198,4 @@ async def resend_handler(client, query: CallbackQuery):
     except:
         pass
 
-    await asyncio.shield(
-        deliver_file(client, uid, 0, file_id)
-    )
+    await deliver_file(client, uid, 0, file_id)
