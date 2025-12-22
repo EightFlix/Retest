@@ -37,13 +37,17 @@ REMINDER_STEPS = [
 # ======================================================
 
 def fmt(dt: datetime) -> str:
+    if isinstance(dt, (int, float)):
+        dt = datetime.utcfromtimestamp(dt)
     return dt.strftime("%d %b %Y, %I:%M %p")
+
 
 def parse_duration(text: str):
     text = text.lower().strip()
     num = int("".join(filter(str.isdigit, text)) or 0)
     if num <= 0:
         return None
+
     if "min" in text:
         return timedelta(minutes=num)
     if "hour" in text or "hr" in text:
@@ -54,10 +58,13 @@ def parse_duration(text: str):
         return timedelta(days=30 * num)
     if "year" in text:
         return timedelta(days=365 * num)
+
     return None
+
 
 def gen_invoice_id():
     return "PRM-" + secrets.token_hex(3).upper()
+
 
 def buy_button():
     return InlineKeyboardMarkup(
@@ -69,31 +76,33 @@ def buy_button():
 # ======================================================
 
 @Client.on_message(filters.command("plan") & filters.private)
-async def plan_cmd(_, message):
+async def plan_cmd(client, message):
     if not IS_PREMIUM:
         return await message.reply("⚠️ Premium system is disabled.")
 
     if message.from_user.id in ADMINS:
         return await message.reply("👑 Admin = Lifetime Premium")
 
-    if await is_premium(message.from_user.id, message._client):
+    if await is_premium(message.from_user.id, client):
         return await message.reply("✅ Premium already active.\nUse /myplan")
 
     await message.reply(
         "💎 **Premium Benefits**\n\n"
         "🚀 Faster search\n"
         "📩 PM Search access\n"
-        "🔕 No ads\n",
+        "🔕 No ads\n"
+        "⚡ Instant access\n",
         reply_markup=buy_button()
     )
 
+
 @Client.on_message(filters.command("myplan") & filters.private)
-async def myplan_cmd(_, message):
+async def myplan_cmd(client, message):
     if message.from_user.id in ADMINS:
         return await message.reply("👑 Lifetime Premium")
 
     plan = db.get_plan(message.from_user.id)
-    if not plan.get("premium"):
+    if not plan or not plan.get("premium"):
         return await message.reply("❌ No active premium plan.")
 
     await message.reply(
@@ -107,7 +116,7 @@ async def myplan_cmd(_, message):
 # ======================================================
 
 @Client.on_message(filters.command("invoice") & filters.private)
-async def invoice_cmd(_, message):
+async def invoice_cmd(client, message):
     plan = db.get_plan(message.from_user.id)
     invoices = plan.get("invoices", [])
 
@@ -136,14 +145,14 @@ async def invoice_cmd(_, message):
 # ======================================================
 
 @Client.on_callback_query(filters.regex("^buy_premium$"))
-async def buy_premium(_, query: CallbackQuery):
+async def buy_premium(client, query: CallbackQuery):
     await query.message.edit(
         "⏳ **Send duration**\n\n"
         "`1 day`\n`7 days`\n`1 month`\n`1 year`"
     )
 
     try:
-        msg = await query._client.listen(
+        msg = await client.listen(
             chat_id=query.message.chat.id,
             user_id=query.from_user.id,
             timeout=300
@@ -178,7 +187,7 @@ async def buy_premium(_, query: CallbackQuery):
     )
 
     try:
-        receipt = await query._client.listen(
+        receipt = await client.listen(
             chat_id=query.message.chat.id,
             user_id=query.from_user.id,
             timeout=600
@@ -190,12 +199,18 @@ async def buy_premium(_, query: CallbackQuery):
 
     buttons = InlineKeyboardMarkup(
         [[
-            InlineKeyboardButton("✅ Approve", callback_data=f"pay_ok#{query.from_user.id}#{msg.text}#{amount}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"pay_no#{query.from_user.id}")
+            InlineKeyboardButton(
+                "✅ Approve",
+                callback_data=f"pay_ok#{query.from_user.id}#{msg.text}#{amount}"
+            ),
+            InlineKeyboardButton(
+                "❌ Reject",
+                callback_data=f"pay_no#{query.from_user.id}"
+            )
         ]]
     )
 
-    await query._client.send_photo(
+    await client.send_photo(
         RECEIPT_SEND_USERNAME,
         receipt.photo.file_id,
         caption=(
@@ -214,7 +229,7 @@ async def buy_premium(_, query: CallbackQuery):
 # ======================================================
 
 @Client.on_callback_query(filters.regex("^pay_ok#"))
-async def admin_approve(_, query: CallbackQuery):
+async def admin_approve(client, query: CallbackQuery):
     if query.from_user.id not in ADMINS:
         return await query.answer("Not allowed", show_alert=True)
 
@@ -248,12 +263,10 @@ async def admin_approve(_, query: CallbackQuery):
         "expire": expire,
         "activated_at": now,
         "invoices": invoices,
-        "trial": False,
-        "last_reminder": None,
-        "last_msg_id": None
+        "last_reminder": None
     })
 
-    await query._client.send_message(
+    await client.send_message(
         uid,
         "🎉 **Premium Activated**\n\n"
         f"💎 Plan: {plan_txt}\n"
@@ -262,16 +275,18 @@ async def admin_approve(_, query: CallbackQuery):
 
     await query.message.edit("✅ Premium approved & activated.")
 
+
 @Client.on_callback_query(filters.regex("^pay_no#"))
-async def admin_reject(_, query: CallbackQuery):
+async def admin_reject(client, query: CallbackQuery):
     if query.from_user.id not in ADMINS:
         return await query.answer("Not allowed", show_alert=True)
 
     uid = int(query.data.split("#")[1])
 
-    await query._client.send_message(
+    await client.send_message(
         uid,
         "❌ **Payment Rejected**\n\n"
         "If you have paid, contact admin."
     )
+
     await query.message.edit("❌ Payment rejected.")
