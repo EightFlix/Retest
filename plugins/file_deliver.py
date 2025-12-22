@@ -28,16 +28,15 @@ from utils import (
 
 GRACE_PERIOD = timedelta(minutes=30)
 
-# ensure runtime memory
+# runtime safety
 if not hasattr(temp, "FILES"):
     temp.FILES = {}
-
 
 # ======================================================
 # 🧠 PREMIUM CHECK
 # ======================================================
 
-async def has_premium_or_grace(user_id):
+async def has_premium_or_grace(user_id: int) -> bool:
     if user_id in ADMINS:
         return True
 
@@ -57,7 +56,7 @@ async def has_premium_or_grace(user_id):
 
 
 # ======================================================
-# ⏱ COUNTDOWN TASK (SAFE)
+# ⏱ COUNTDOWN TASK
 # ======================================================
 
 async def countdown_task(msg_id: int, seconds: int):
@@ -103,7 +102,7 @@ async def file_button_handler(client: Client, query: CallbackQuery):
 
     premium_ok = await has_premium_or_grace(uid)
 
-    # ---- FREE → SHORTLINK ----
+    # ---- FREE USER → SHORTLINK ----
     if settings.get("shortlink") and not premium_ok:
         link = await get_shortlink(
             settings.get("url"),
@@ -122,29 +121,27 @@ async def file_button_handler(client: Client, query: CallbackQuery):
             ])
         )
 
+    # ---- PREMIUM → REDIRECT TO PM ----
     await query.answer(
         url=f"https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file_id}"
     )
 
 
 # ======================================================
-# 📩 /start FILE DELIVERY (PM)
+# 📩 /START FILE DELIVERY (PM ONLY)
 # ======================================================
 
-@Client.on_message(filters.command("start") & filters.private)
-async def start_file_delivery(client, message):
-    if len(message.command) < 2:
-        return
-
-    data = message.command[1]
-    if not data.startswith("file_"):
-        return
+@Client.on_message(
+    filters.command("start") & filters.private & filters.regex(r"^/start file_")
+)
+async def start_file_delivery(client: Client, message):
+    data = message.text.split(maxsplit=1)[1]
 
     try:
         _, grp_id, file_id = data.split("_", 2)
         grp_id = int(grp_id)
     except:
-        return await message.reply("❌ Invalid link")
+        return await message.reply("❌ Invalid file link")
 
     file = await get_file_details(file_id)
     if not file:
@@ -164,7 +161,7 @@ async def start_file_delivery(client, message):
         )
 
     # ==================================================
-    # 🔥 CLEAN OLD SESSION (IMPORTANT FIX)
+    # 🔥 CLEAN OLD SESSION (ONE FILE AT A TIME)
     # ==================================================
     for k, old in list(temp.FILES.items()):
         if old.get("owner") == uid:
@@ -182,7 +179,9 @@ async def start_file_delivery(client, message):
                 pass
             temp.FILES.pop(k, None)
 
-    # ---------- CAPTION ----------
+    # ==================================================
+    # 📄 CAPTION
+    # ==================================================
     caption_tpl = settings.get("caption") or "{file_name}\n\n{file_caption}"
     caption = caption_tpl.format(
         file_name=file.get("file_name", "File"),
@@ -209,7 +208,7 @@ async def start_file_delivery(client, message):
         f"⚠️ File will be deleted in {get_readable_time(PM_FILE_DELETE_TIME)}"
     )
 
-    # auto delete /start command
+    # delete /start command
     try:
         await message.delete()
     except:
@@ -220,7 +219,7 @@ async def start_file_delivery(client, message):
     )
 
     # ==================================================
-    # 🔐 PER-FILE OWNERSHIP MEMORY
+    # 🔐 OWNERSHIP MEMORY
     # ==================================================
     temp.FILES[sent.id] = {
         "owner": uid,
