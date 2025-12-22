@@ -2,13 +2,14 @@ import os
 import aiohttp
 import asyncio
 import time
+
 from hydrogram import Client, filters
 from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from info import ADMINS
-from utils import temp, is_premium
+from utils import is_premium
 
 # =========================
-# GLOBAL STATE (LIGHT)
+# GLOBAL STATE
 # =========================
 UPLOAD_QUEUE = asyncio.Lock()
 UPLOAD_PANEL = {}   # user_id -> state
@@ -16,7 +17,7 @@ UPLOAD_PANEL = {}   # user_id -> state
 GOFILE_API = "https://store1.gofile.io/contents/uploadfile"
 
 # =========================
-# HELPERS
+# UI
 # =========================
 
 def panel_buttons(state):
@@ -41,15 +42,56 @@ def panel_buttons(state):
         ]
     ])
 
-async def delete_after(bot, chat_id, msg_id, delay):
-    await asyncio.sleep(delay)
-    try:
-        await bot.delete_messages(chat_id, msg_id)
-    except:
-        pass
+# =========================
+# STREAMING FILE WITH PROGRESS
+# =========================
+
+class ProgressFile:
+    def __init__(self, path, status_msg):
+        self.file = open(path, "rb")
+        self.total = os.path.getsize(path)
+        self.sent = 0
+        self.start = time.time()
+        self.status = status_msg
+        self.last_edit = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        chunk = self.file.read(1024 * 256)  # 256KB
+        if not chunk:
+            self.file.close()
+            raise StopAsyncIteration
+
+        self.sent += len(chunk)
+        await self._update_progress()
+        return chunk
+
+    async def _update_progress(self):
+        now = time.time()
+        if now - self.last_edit < 1:
+            return
+
+        percent = (self.sent / self.total) * 100
+        speed = self.sent / (now - self.start + 1)
+        eta = (self.total - self.sent) / (speed + 1)
+
+        text = (
+            "⚡ **Uploading…**\n\n"
+            f"📊 Progress : `{percent:.1f}%`\n"
+            f"🚀 Speed : `{speed/1024:.1f} KB/s`\n"
+            f"⏳ ETA : `{int(eta)}s`"
+        )
+
+        try:
+            await self.status.edit(text)
+            self.last_edit = now
+        except:
+            pass
 
 # =========================
-# ADMIN UPLOAD PANEL
+# /upload COMMAND
 # =========================
 
 @Client.on_message(filters.command("upload") & filters.private)
@@ -57,23 +99,31 @@ async def upload_panel(bot, message):
     uid = message.from_user.id
 
     if uid not in ADMINS and not await is_premium(uid, bot):
-        return await message.reply("❌ Uploads are Premium-only.")
+        return await message.reply("❌ Upload is Premium only.")
+
+    if not message.reply_to_message or not message.reply_to_message.media:
+        return await message.reply("❗ Reply to a file to upload")
 
     UPLOAD_PANEL[uid] = {
+        "file": message.reply_to_message,
         "private": False,
         "mirror": False,
         "delete": 0
     }
 
     await message.reply(
-        "📤 **Admin Upload Panel**\n\n"
-        "Reply to a file, configure options, then start upload.",
+        "📤 **Admin Upload Panel**\n\nConfigure options, then start upload.",
         reply_markup=panel_buttons(UPLOAD_PANEL[uid])
     )
+
+# =========================
+# CALLBACK
+# =========================
 
 @Client.on_callback_query(filters.regex("^up#"))
 async def upload_panel_cb(bot, query: CallbackQuery):
     uid = query.from_user.id
+
     if uid not in UPLOAD_PANEL:
         return await query.answer("Session expired", show_alert=True)
 
@@ -94,34 +144,39 @@ async def upload_panel_cb(bot, query: CallbackQuery):
         return await query.message.edit("❌ Upload cancelled.")
 
     elif data[1] == "start":
-        if not query.message.reply_to_message:
-            return await query.answer("Reply to a file first", show_alert=True)
-
-        await query.message.edit("⏳ Upload queued...")
-        asyncio.create_task(start_upload(bot, query, state))
+        await query.message.edit("⏳ Preparing upload…")
+        asyncio.create_task(start_upload(bot, query.message, uid))
         return
 
-    await query.message.edit_reply_markup(
-        reply_markup=panel_buttons(state)
-    )
+    await query.message.edit_reply_markup(panel_buttons(state))
     await query.answer()
 
 # =========================
-# UPLOAD LOGIC
+# UPLOAD WITH PROGRESS
 # =========================
 
-async def start_upload(bot, query: CallbackQuery, state):
+async def start_upload(bot, msg, uid):
     async with UPLOAD_QUEUE:
-        msg = query.message
-        reply = msg.reply_to_message
-        path = await reply.download()
+        state = UPLOAD_PANEL.get(uid)
+        if not state:
+            return await msg.edit("❌ Session expired.")
 
-        status = await msg.edit("⚡ Uploading to GoFile...")
+        media = state["file"]
+        path = await media.download()
+
+        status = await msg.edit("⚡ Starting upload…")
 
         try:
+            progress_file = ProgressFile(path, status)
+
             async with aiohttp.ClientSession() as session:
                 data = aiohttp.FormData()
-                data.add_field("file", open(path, "rb"))
+                data.add_field(
+                    "file",
+                    progress_file,
+                    filename=os.path.basename(path),
+                    content_type="application/octet-stream"
+                )
 
                 async with session.post(GOFILE_API, data=data) as r:
                     res = await r.json()
@@ -131,34 +186,17 @@ async def start_upload(bot, query: CallbackQuery, state):
 
             link = res["data"]["downloadPage"]
 
-            # MIRROR (optional)
-            if state["mirror"]:
-                status = await status.edit("🔁 Mirroring to Transfer.sh...")
-                async with aiohttp.ClientSession() as session:
-                    with open(path, "rb") as f:
-                        async with session.put(
-                            f"https://transfer.sh/{os.path.basename(path)}",
-                            data=f
-                        ) as r:
-                            if r.status == 200:
-                                mirror = (await r.text()).strip()
-                                link += f"\n\n🔁 Mirror:\n{mirror}"
-
-            final = await status.edit(
+            await status.edit(
                 f"✅ **Upload Complete**\n\n<code>{link}</code>",
                 disable_web_page_preview=True
             )
-
-            # AUTO DELETE
-            if state["delete"]:
-                asyncio.create_task(
-                    delete_after(bot, final.chat.id, final.id, state["delete"])
-                )
 
         except Exception as e:
             await status.edit(f"❌ Error: {e}")
 
         finally:
-            if os.path.exists(path):
+            try:
                 os.remove(path)
-            UPLOAD_PANEL.pop(query.from_user.id, None)
+            except:
+                pass
+            UPLOAD_PANEL.pop(uid, None)
