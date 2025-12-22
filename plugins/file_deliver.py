@@ -53,7 +53,6 @@ async def file_button_handler(client: Client, query: CallbackQuery):
     settings = await get_settings(query.message.chat.id)
     uid = query.from_user.id
 
-    # ---- FREE → SHORTLINK ----
     if settings.get("shortlink") and not await has_premium_or_grace(uid):
         link = await get_shortlink(
             settings.get("url"),
@@ -69,7 +68,6 @@ async def file_button_handler(client: Client, query: CallbackQuery):
             ])
         )
 
-    # ---- PREMIUM → PM ----
     await query.answer(
         url=f"https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file_id}"
     )
@@ -87,17 +85,17 @@ async def start_file_delivery(client: Client, message):
     except:
         return
 
-    await deliver_file(client, message.from_user.id, grp_id, file_id)
-
-    # 🔥 ALWAYS DELETE /start
+    # ✅ DELETE /start FIRST (GUARANTEED)
     try:
         await message.delete()
     except:
         pass
 
+    await deliver_file(client, message.from_user.id, grp_id, file_id)
+
 
 # ======================================================
-# 🚚 CORE DELIVERY (USED BY RESEND)
+# 🚚 CORE DELIVERY
 # ======================================================
 
 async def deliver_file(client, uid, grp_id, file_id):
@@ -110,7 +108,7 @@ async def deliver_file(client, uid, grp_id, file_id):
         return
 
     # ==================================================
-    # 🔥 CLEAN OLD FILE (ONE AT A TIME)
+    # 🔥 CLEAN OLD FILE (ONE ACTIVE ONLY)
     # ==================================================
     for k, v in list(temp.FILES.items()):
         if v.get("owner") == uid:
@@ -121,7 +119,7 @@ async def deliver_file(client, uid, grp_id, file_id):
             temp.FILES.pop(k, None)
 
     # ==================================================
-    # 📄 CLEAN CAPTION (NO DUPLICATE / NO AUTO TEXT)
+    # 📄 CLEAN CAPTION (NO DUPLICATE)
     # ==================================================
     caption_tpl = settings.get("caption") or "{file_name}\n\n{file_caption}"
     base_caption = caption_tpl.format(
@@ -131,9 +129,9 @@ async def deliver_file(client, uid, grp_id, file_id):
 
     buttons = []
     if IS_STREAM:
-        buttons.append([
-            InlineKeyboardButton("▶️ Watch / Download", callback_data=f"stream#{file_id}")
-        ])
+        buttons.append(
+            [InlineKeyboardButton("▶️ Watch / Download", callback_data=f"stream#{file_id}")]
+        )
     buttons.append([InlineKeyboardButton("❌ Close", callback_data="close_data")])
 
     markup = InlineKeyboardMarkup(buttons)
@@ -141,23 +139,19 @@ async def deliver_file(client, uid, grp_id, file_id):
     sent = await client.send_cached_media(
         chat_id=uid,
         file_id=file_id,
-        caption=base_caption,
+        caption=base_caption,   # ✅ ONLY ONCE
         protect_content=PROTECT_CONTENT,
         reply_markup=markup
     )
 
-    # ==================================================
-    # 🧠 MEMORY TRACK (NO COUNTDOWN EDIT)
-    # ==================================================
     temp.FILES[sent.id] = {
         "owner": uid,
-        "file_id": file_id,
         "file": sent,
         "expire": int(time.time()) + PM_FILE_DELETE_TIME
     }
 
     # ==================================================
-    # 🗑 SILENT AUTO DELETE
+    # 🗑 SILENT AUTO DELETE (NO EDIT)
     # ==================================================
     await asyncio.sleep(PM_FILE_DELETE_TIME)
 
@@ -203,5 +197,4 @@ async def resend_handler(client, query: CallbackQuery):
     except:
         pass
 
-    # grp_id not needed again (file already indexed)
-    await deliver_file(client, uid, 0, file_id)
+    await deliver_file(client, uid, query.message.chat.id, file_id)
