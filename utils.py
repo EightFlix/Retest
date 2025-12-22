@@ -1,6 +1,7 @@
 import asyncio
 import pytz
 import qrcode
+import time
 from io import BytesIO
 from datetime import datetime, timedelta
 
@@ -21,14 +22,14 @@ from shortzy import Shortzy
 
 
 # ======================================================
-# 🧠 GLOBAL RUNTIME STATE (SAFE & SYNCED)
+# 🧠 GLOBAL RUNTIME STATE
 # ======================================================
 
 class temp(object):
     START_TIME = 0
     BOT = None
 
-    # runtime info
+    # bot info
     ME = None
     U_NAME = None
     B_NAME = None
@@ -37,28 +38,30 @@ class temp(object):
     BANNED_USERS = set()
     BANNED_CHATS = set()
 
-    # broadcast / index flags
+    # broadcast flags
     CANCEL = False
     USERS_CANCEL = False
     GROUPS_CANCEL = False
 
-    # runtime caches
+    # cached data
     SETTINGS = {}
     VERIFICATIONS = {}
 
-    # 🔥 FILE DELIVERY MEMORY
-    # user_id -> {
-    #   "file": Message,
-    #   "notice": Message,
-    #   "task": asyncio.Task,
-    #   "expire": timestamp
+    # 🔥 FILE DELIVERY MEMORY (msg_id → data)
+    # {
+    #   msg_id: {
+    #       "owner": user_id,
+    #       "file": Message,
+    #       "task": asyncio.Task,
+    #       "expire": unix_time
+    #   }
     # }
     FILES = {}
 
     # premium cache (optional)
     PREMIUM = {}
 
-    # 🔥 INDEX LIVE STATS (ADMIN DASHBOARD)
+    # 🔥 LIVE INDEX STATS (ADMIN DASHBOARD)
     INDEX_STATS = {
         "running": False,
         "start": 0,
@@ -77,24 +80,33 @@ GRACE_PERIOD = timedelta(minutes=20)
 
 
 # ======================================================
-# 🔁 AUTO CLEANUP WORKER (FILES MEMORY)
+# 🔁 MEMORY LEAK GUARD (FILES AUTO CLEAN)
 # ======================================================
 
 async def cleanup_files_memory():
     """
-    Auto-removes expired temp.FILES entries
-    Prevents memory leak on PM file delivery
+    Periodically cleans expired temp.FILES entries
+    Prevents memory leak in PM file delivery
     """
     while True:
         try:
-            now = int(datetime.utcnow().timestamp())
-            expired_users = [
-                uid for uid, data in temp.FILES.items()
-                if data.get("expire", 0) <= now
+            now = int(time.time())
+            expired_keys = [
+                k for k, v in temp.FILES.items()
+                if v.get("expire", 0) <= now
             ]
 
-            for uid in expired_users:
-                temp.FILES.pop(uid, None)
+            for k in expired_keys:
+                data = temp.FILES.pop(k, None)
+                if not data:
+                    continue
+
+                # cancel countdown task safely
+                try:
+                    if data.get("task"):
+                        data["task"].cancel()
+                except:
+                    pass
 
         except Exception:
             pass
@@ -168,7 +180,7 @@ async def update_verify_status(user_id, **kwargs):
 
 
 # ======================================================
-# 👑 PREMIUM CHECK (SINGLE SOURCE OF TRUTH)
+# 👑 PREMIUM CHECK (SINGLE SOURCE)
 # ======================================================
 
 async def is_premium(user_id, bot=None) -> bool:
@@ -189,7 +201,7 @@ async def is_premium(user_id, bot=None) -> bool:
     if datetime.utcnow() <= expire + GRACE_PERIOD:
         return True
 
-    # auto cleanup after hard expiry
+    # auto downgrade
     plan.update({
         "premium": False,
         "expire": "",
@@ -201,7 +213,7 @@ async def is_premium(user_id, bot=None) -> bool:
 
 
 # ======================================================
-# 🛡️ BACKGROUND PREMIUM WATCHER
+# 🛡 PREMIUM WATCHER (BACKGROUND)
 # ======================================================
 
 async def check_premium(bot):
