@@ -3,7 +3,6 @@ import re
 import base64
 import time
 from struct import pack
-from difflib import get_close_matches
 from datetime import datetime
 
 from hydrogram.file_id import FileId
@@ -21,43 +20,48 @@ from info import (
 logger = logging.getLogger(__name__)
 
 # =====================================================
-# 📦 DATABASE (SINGLE DB – FINAL)
+# 📦 DATABASE
 # =====================================================
 client = MongoClient(DATA_DATABASE_URL, serverSelectionTimeoutMS=5000)
 db = client[DATABASE_NAME]
 collection = db[COLLECTION_NAME]
 
 # =====================================================
-# 🚀 DB INDEX TUNING (SAFE + FAST)
+# 🚀 SAFE INDEX SETUP (NO WARNING)
 # =====================================================
 def ensure_indexes(col):
-    try:
-        col.create_index(
-            [("file_name", TEXT), ("caption", TEXT)],
-            name="file_text_index"
-        )
-    except OperationFailure as e:
-        logger.warning(f"Index warning: {e}")
+    indexes = col.index_information()
 
-    try:
-        col.create_index("quality", name="quality_idx")
-        col.create_index("updated_at", name="updated_at_idx")
-    except OperationFailure:
-        pass
+    if "file_text_index" not in indexes:
+        try:
+            col.create_index(
+                [("file_name", TEXT), ("caption", TEXT)],
+                name="file_text_index",
+                default_language="english"
+            )
+        except OperationFailure as e:
+            logger.warning(f"Index skipped: {e}")
+
+    if "quality_idx" not in indexes:
+        col.create_index([("quality", ASCENDING)], name="quality_idx")
+
+    if "updated_at_idx" not in indexes:
+        col.create_index([("updated_at", ASCENDING)], name="updated_at_idx")
+
 
 ensure_indexes(collection)
 
 # =====================================================
-# 📊 COUNTS
+# 📊 COUNTS (FAST)
 # =====================================================
 def db_count_documents():
     return collection.estimated_document_count()
 
 # =====================================================
-# ⚡ SEARCH CACHE
+# ⚡ LIGHT CACHE (TEMP)
 # =====================================================
 SEARCH_CACHE = {}
-CACHE_TTL = 60
+CACHE_TTL = 30
 
 def cache_get(key):
     v = SEARCH_CACHE.get(key)
@@ -88,18 +92,11 @@ def detect_quality(name: str) -> str:
     return "unknown"
 
 # =====================================================
-# 🔍 FUZZY FIX
-# =====================================================
-def fuzzy_fix(query, choices):
-    match = get_close_matches(query, choices, n=1, cutoff=0.7)
-    return match[0] if match else None
-
-# =====================================================
-# 🔎 SEARCH ENGINE
+# 🔎 SEARCH ENGINE (FAST)
 # =====================================================
 async def get_search_results(query, offset=0, max_results=MAX_BTN):
     q = query.strip().lower()
-    if not q or len(q) < 2:
+    if len(q) < 2:
         return [], "", 0
 
     cache_key = f"{q}:{offset}"
@@ -110,9 +107,10 @@ async def get_search_results(query, offset=0, max_results=MAX_BTN):
     files = []
     total = 0
 
-    # TEXT SEARCH
+    # TEXT SEARCH (PRIMARY)
+    text_filter = {"$text": {"$search": q}}
+
     try:
-        text_filter = {"$text": {"$search": q}}
         cursor = (
             collection.find(
                 text_filter,
@@ -128,12 +126,14 @@ async def get_search_results(query, offset=0, max_results=MAX_BTN):
             .skip(offset)
             .limit(max_results)
         )
+
         files = list(cursor)
-        total = collection.count_documents(text_filter)
+        total = collection.count_documents(text_filter, limit=10000)
+
     except Exception as e:
         logger.error(f"Text search error: {e}")
 
-    # REGEX FALLBACK
+    # REGEX FALLBACK (LIMITED)
     if not files:
         regex = re.compile(re.escape(q), re.IGNORECASE)
         rg_filter = (
@@ -141,19 +141,13 @@ async def get_search_results(query, offset=0, max_results=MAX_BTN):
             if USE_CAPTION_FILTER
             else {"file_name": regex}
         )
+
         cursor = collection.find(rg_filter).skip(offset).limit(max_results)
         files = list(cursor)
-        total = collection.count_documents(rg_filter)
-
-    # FUZZY RETRY
-    if not files:
-        try:
-            names = collection.distinct("file_name")
-            fix = fuzzy_fix(q, names)
-            if fix and fix != q:
-                return await get_search_results(fix, offset, max_results)
-        except:
-            pass
+        total = min(
+            collection.count_documents(rg_filter, limit=5000),
+            5000
+        )
 
     next_offset = offset + max_results if total > offset + max_results else ""
     result = (files, next_offset, total)
@@ -213,7 +207,7 @@ async def save_file(media):
         return "err"
 
 # =====================================================
-# 🔄 CHANNEL UPDATE HELPERS (🔥 FIXED)
+# 🔄 UPDATE HELPERS
 # =====================================================
 async def update_file_caption(file_id, new_caption: str):
     if not new_caption:
