@@ -144,7 +144,7 @@ USE_CAPTION_FILTER = is_enabled('USE_CAPTION_FILTER', True)
 IS_VERIFY = is_enabled('IS_VERIFY', True)
 AUTO_DELETE = is_enabled('AUTO_DELETE', False)
 WELCOME = is_enabled('WELCOME', True)
-PROTECT_CONTENT = is_enabled('PROTECT_CONTENT', True)
+PROTECT_CONTENT = is_enabled('PROTECT_CONTENT', False)
 LINK_MODE = is_enabled("LINK_MODE", True)
 
 # ================= STREAM =================
