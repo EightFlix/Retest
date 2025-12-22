@@ -41,11 +41,10 @@ async def filter_handler(client, message):
         source_chat_id = 0
         source_chat_title = ""
 
+        # 🔥 SIMPLE + SAFE PM PREMIUM CHECK (NO DB SETTINGS)
         if user_id not in ADMINS:
-            bot_stg = db.get_bot_sttgs()
-            if not bot_stg.get("PM_SEARCH", True):
-                if not await is_premium(user_id, client):
-                    return
+            if not await is_premium(user_id, client):
+                return
 
     await send_results(
         client=client,
@@ -107,10 +106,8 @@ async def send_results(
         text += f"\n\n<b>Powered By :</b> {source_chat_title}"
 
     # -------- BUTTONS (OWNER BOUND) --------
-    buttons = []
-    nav = []
-
     owner = user_id
+    nav = []
 
     if offset > 0:
         nav.append(
@@ -132,8 +129,7 @@ async def send_results(
     else:
         nav.append(InlineKeyboardButton("Next ⛔", callback_data="pages"))
 
-    buttons.append(nav)
-    markup = InlineKeyboardMarkup(buttons)
+    markup = InlineKeyboardMarkup([nav])
 
     # -------- SEND / EDIT --------
     if message:
