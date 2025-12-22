@@ -36,7 +36,7 @@ async def safe_edit_media(msg, media, reply_markup=None):
         await msg.edit_media(media=media, reply_markup=reply_markup)
     except MessageNotModified:
         pass
-    except Exception:
+    except:
         pass
 
 
@@ -47,7 +47,7 @@ async def safe_edit_caption(msg, caption, reply_markup=None):
         await msg.edit_caption(caption, reply_markup=reply_markup)
     except MessageNotModified:
         pass
-    except Exception:
+    except:
         pass
 
 
@@ -56,7 +56,7 @@ async def safe_edit_markup(msg, reply_markup):
         await msg.edit_reply_markup(reply_markup)
     except MessageNotModified:
         pass
-    except Exception:
+    except:
         pass
 
 
@@ -97,26 +97,32 @@ async def cb_handler(client: Client, query: CallbackQuery):
     uid = query.from_user.id
 
     # ==================================================
-    # ❌ CLOSE (FULL CLEANUP)
+    # ❌ CLOSE (OWNER ONLY)
     # ==================================================
     if data == "close_data":
         await query.answer("Closed")
 
+        mem = temp.FILES.get(uid)
+
+        # ---- ownership validation ----
+        if mem and mem.get("owner") != uid:
+            return await query.answer("❌ Not your file", show_alert=True)
+
         # ---- PM FILE CLEANUP ----
-        data_mem = temp.FILES.pop(uid, None)
-        if data_mem:
+        mem = temp.FILES.pop(uid, None)
+        if mem:
             try:
-                data_mem["task"].cancel()
+                mem["task"].cancel()
             except:
                 pass
 
             try:
-                await data_mem["file"].delete()
+                await mem["file"].delete()
             except:
                 pass
 
             try:
-                await data_mem["notice"].delete()
+                await mem["notice"].delete()
             except:
                 pass
 
@@ -134,9 +140,18 @@ async def cb_handler(client: Client, query: CallbackQuery):
         return await query.answer()
 
     # ==================================================
-    # ▶️ STREAM (PREMIUM)
+    # ▶️ STREAM (OWNER + PREMIUM)
     # ==================================================
     if data.startswith("stream#"):
+        mem = temp.FILES.get(uid)
+
+        # ---- ownership validation ----
+        if mem and mem.get("owner") != uid:
+            return await query.answer(
+                "❌ This file is not for you",
+                show_alert=True
+            )
+
         if not await is_premium(uid, client):
             return await query.answer(
                 "🔒 Premium only feature.\nUse /plan to upgrade.",
@@ -292,7 +307,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
         return
 
     # ==================================================
-    # 📊 ADMIN STATS (POPUP)
+    # 📊 ADMIN STATS
     # ==================================================
     if data == "stats_callback":
         if uid not in ADMINS:
