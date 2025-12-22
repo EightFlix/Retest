@@ -21,18 +21,41 @@ async def is_group_admin(client, chat_id, user_id):
 # ⚙️ SETTINGS UI
 # =====================================================
 def settings_buttons(settings):
+    search = settings.get("search", True)
+    shortlink = settings.get("shortlink", False)
+    lang = settings.get("lang", "auto")
+    emoji = settings.get("emoji", True)
+
+    lang_txt = {
+        "auto": "🌍 Auto",
+        "hi": "🇮🇳 Hindi",
+        "en": "🇬🇧 English"
+    }.get(lang, "🌍 Auto")
+
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    f"🔍 Search {'✅ ON' if settings.get('search', True) else '❌ OFF'}",
+                    f"🔍 Search {'✅ ON' if search else '❌ OFF'}",
                     callback_data="stg#search"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    f"🔗 Shortlink {'✅ ON' if settings.get('shortlink') else '❌ OFF'}",
+                    f"🔗 Shortlink {'✅ ON' if shortlink else '❌ OFF'}",
                     callback_data="stg#shortlink"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"🌐 Language: {lang_txt}",
+                    callback_data="stg#lang"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"🔥 Emoji Mood {'😎 ON' if emoji else '🚫 OFF'}",
+                    callback_data="stg#emoji"
                 )
             ],
             [
@@ -78,22 +101,36 @@ async def settings_callback(client, query: CallbackQuery):
         return await query.answer("Admins only", show_alert=True)
 
     action = query.data.split("#")[1]
-
     settings = await db.get_settings(chat_id)
 
-    # ---- TOGGLES ----
+    # ==============================
+    # 🔁 TOGGLES
+    # ==============================
     if action == "search":
         settings["search"] = not settings.get("search", True)
 
     elif action == "shortlink":
         settings["shortlink"] = not settings.get("shortlink", False)
 
-    # ---- SAVE ----
+    elif action == "emoji":
+        settings["emoji"] = not settings.get("emoji", True)
+
+    elif action == "lang":
+        # cycle: auto → hi → en → auto
+        cur = settings.get("lang", "auto")
+        settings["lang"] = (
+            "hi" if cur == "auto"
+            else "en" if cur == "hi"
+            else "auto"
+        )
+
+    # ==============================
+    # 💾 SAVE + CACHE
+    # ==============================
     await db.save_group_settings(chat_id, settings)
-    temp.SETTINGS[chat_id] = settings  # cache update
+    temp.SETTINGS[chat_id] = settings  # cache sync
 
     await query.message.edit_reply_markup(
         reply_markup=settings_buttons(settings)
     )
-
     await query.answer("✅ Updated")
