@@ -22,7 +22,7 @@ from info import API_ID, API_HASH, BOT_TOKEN, PORT, LOG_CHANNEL, ADMINS
 from utils import (
     temp,
     check_premium,
-    cleanup_files_memory   # ✅ NEW
+    cleanup_files_memory   # 🔥 MEMORY LEAK GUARD
 )
 from database.users_chats_db import db
 
@@ -55,20 +55,20 @@ class Bot(Client):
     async def start(self):
         await super().start()
 
-        # ---- runtime info ----
+        # ---- runtime globals ----
         temp.START_TIME = time.time()
         temp.BOT = self
 
         # ---- restart notify ----
         if os.path.exists("restart.txt"):
-            with open("restart.txt") as f:
-                try:
+            try:
+                with open("restart.txt") as f:
                     cid, mid = map(int, f.read().split())
                     await self.edit_message_text(
                         cid, mid, "✅ Bot Restarted Successfully!"
                     )
-                except:
-                    pass
+            except:
+                pass
             os.remove("restart.txt")
 
         me = await self.get_me()
@@ -92,10 +92,10 @@ class Bot(Client):
         # Premium expiry watcher
         asyncio.create_task(check_premium(self))
 
-        # 🔥 temp.FILES auto cleanup
+        # 🔥 temp.FILES memory guard
         asyncio.create_task(cleanup_files_memory())
 
-        # Auto unban worker (TEMPBAN / SOFTBAN)
+        # Auto unban worker
         asyncio.create_task(auto_unban_worker(self))
 
         # ---- admin notify ----
@@ -120,11 +120,11 @@ class Bot(Client):
         except:
             pass
 
-        logger.info(f"Bot @{me.username} started")
+        logger.info(f"Bot @{me.username} started successfully")
 
     async def stop(self, *args):
         await super().stop()
-        logger.info("Bot stopped")
+        logger.info("Bot stopped cleanly")
 
 
 # ==========================
