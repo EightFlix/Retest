@@ -19,10 +19,14 @@ from aiohttp import web
 
 from web import web_app
 from info import API_ID, API_HASH, BOT_TOKEN, PORT, LOG_CHANNEL, ADMINS
-from utils import temp, check_premium
+from utils import (
+    temp,
+    check_premium,
+    cleanup_files_memory   # ✅ NEW
+)
 from database.users_chats_db import db
 
-# 🔴 IMPORTANT: banned worker import
+# 🔴 IMPORTANT: banned worker
 from plugins.banned import auto_unban_worker
 
 
@@ -75,14 +79,21 @@ class Bot(Client):
         # ---- web server ----
         runner = web.AppRunner(web_app)
         await runner.setup()
-        await web.TCPSite(runner, "0.0.0.0", PORT).start()
+        await web.TCPSite(
+            runner,
+            host="0.0.0.0",
+            port=PORT
+        ).start()
 
         # ==========================
         # 🔁 BACKGROUND TASKS
         # ==========================
 
-        # Premium expiry safety
+        # Premium expiry watcher
         asyncio.create_task(check_premium(self))
+
+        # 🔥 temp.FILES auto cleanup
+        asyncio.create_task(cleanup_files_memory())
 
         # Auto unban worker (TEMPBAN / SOFTBAN)
         asyncio.create_task(auto_unban_worker(self))
