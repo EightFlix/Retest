@@ -75,12 +75,10 @@ async def is_premium(user_id, bot=None) -> bool:
     now_ts = time.time()
     cached = temp.PREMIUM.get(user_id)
 
-    # ---- RAM CACHE ----
     if cached and now_ts - cached["checked_at"] < PREMIUM_CACHE_TTL:
         expire = cached["expire"]
         return bool(expire and datetime.utcnow() <= expire + GRACE_PERIOD)
 
-    # ---- DB FALLBACK ----
     plan = db.get_plan(user_id)
     if not plan or not plan.get("premium"):
         temp.PREMIUM[user_id] = {"expire": None, "checked_at": now_ts}
@@ -134,11 +132,10 @@ async def check_premium(bot):
                     })
                     db.update_plan(uid, plan)
                     temp.PREMIUM.pop(uid, None)
-
-        except Exception:
+        except:
             pass
 
-        await asyncio.sleep(1800)  # 30 min
+        await asyncio.sleep(1800)
 
 
 # ======================================================
@@ -155,7 +152,6 @@ async def premium_expiry_reminder(bot):
     while True:
         try:
             now = datetime.utcnow()
-
             for user in db.get_premium_users():
                 uid = user["id"]
                 if uid in ADMINS:
@@ -189,15 +185,14 @@ async def premium_expiry_reminder(bot):
                         plan["last_reminder"] = tag
                         db.update_plan(uid, plan)
                         break
-
-        except Exception:
+        except:
             pass
 
         await asyncio.sleep(1800)
 
 
 # ======================================================
-# 🧠 SMART SEARCH LEARNING (OFFLINE / FAST)
+# 🧠 SMART SEARCH LEARNING
 # ======================================================
 
 def learn_keywords(text: str):
@@ -236,7 +231,7 @@ def suggest_query(query: str):
 
 
 # ======================================================
-# 🌍 LANGUAGE HELPERS (LIGHTWEIGHT)
+# 🌍 LANGUAGE HELPERS
 # ======================================================
 
 def set_user_lang(user_id: int, lang: str):
@@ -256,7 +251,7 @@ def get_lang(user_id: int = None, group_id: int = None, default="en"):
 
 
 # ======================================================
-# 🎉 FESTIVAL + SMART GREETING
+# 🎉 FESTIVAL + GREETING
 # ======================================================
 
 FESTIVALS = {
@@ -266,18 +261,9 @@ FESTIVALS = {
 }
 
 FESTIVAL_MSG = {
-    "holi": {
-        "en": "🎨 Happy Holi",
-        "hi": "🎨 होली मुबारक"
-    },
-    "diwali": {
-        "en": "🪔 Happy Diwali",
-        "hi": "🪔 दीपावली मुबारक"
-    },
-    "eid": {
-        "en": "🌙 Eid Mubarak",
-        "hi": "🌙 ईद मुबारक"
-    }
+    "holi": {"en": "🎨 Happy Holi", "hi": "🎨 होली मुबारक"},
+    "diwali": {"en": "🪔 Happy Diwali", "hi": "🪔 दीपावली मुबारक"},
+    "eid": {"en": "🌙 Eid Mubarak", "hi": "🌙 ईद मुबारक"}
 }
 
 EMOJI_DAY = ["🌞", "✨", "🌤"]
@@ -289,18 +275,17 @@ def detect_festival():
     return FESTIVALS.get((now.month, now.day))
 
 
-def get_wish(user_name: str = None, lang="en", premium=False):
+def get_wish(user_name=None, lang="en", premium=False):
     fest = detect_festival()
     if fest:
-        return FESTIVAL_MSG.get(fest, {}).get(lang)
+        return FESTIVAL_MSG[fest][lang]
 
     hour = datetime.now(pytz.timezone(TIME_ZONE)).hour
-    name = f", {user_name}" if user_name else ""
     emoji = random.choice(EMOJI_DAY if hour < 18 else EMOJI_NIGHT)
-
     if premium:
         emoji = "👑 " + emoji
 
+    name = f", {user_name}" if user_name else ""
     if hour < 12:
         return f"{emoji} {'सुप्रभात' if lang=='hi' else 'Good Morning'}{name}"
     if hour < 18:
@@ -309,23 +294,63 @@ def get_wish(user_name: str = None, lang="en", premium=False):
 
 
 # ======================================================
-# 🔁 FILE MEMORY CLEANER (LEAK GUARD)
+# 🔁 FILE MEMORY CLEANER
 # ======================================================
 
 async def cleanup_files_memory():
     while True:
         try:
             now = int(time.time())
-            expired = [
-                k for k, v in temp.FILES.items()
-                if v.get("expire", 0) <= now
-            ]
-            for k in expired:
-                temp.FILES.pop(k, None)
+            for k, v in list(temp.FILES.items()):
+                if v.get("expire", 0) <= now:
+                    temp.FILES.pop(k, None)
         except:
             pass
-
         await asyncio.sleep(60)
+
+
+# ======================================================
+# 📢 BROADCAST HELPERS (FIXED)
+# ======================================================
+
+async def broadcast_messages(user_id, message, pin=False):
+    try:
+        msg = await message.copy(chat_id=user_id)
+        if pin:
+            try:
+                await msg.pin(both_sides=True)
+            except:
+                pass
+        return "Success"
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await broadcast_messages(user_id, message, pin)
+    except:
+        try:
+            await db.delete_user(int(user_id))
+        except:
+            pass
+        return "Error"
+
+
+async def groups_broadcast_messages(chat_id, message, pin=False):
+    try:
+        msg = await message.copy(chat_id=chat_id)
+        if pin:
+            try:
+                await msg.pin()
+            except:
+                pass
+        return "Success"
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await groups_broadcast_messages(chat_id, message, pin)
+    except:
+        try:
+            await db.delete_chat(chat_id)
+        except:
+            pass
+        return "Error"
 
 
 # ======================================================
@@ -352,8 +377,7 @@ async def generate_qr_code(data: str):
 async def get_shortlink(url, api, link):
     if not api or not url:
         return link
-    shortzy = Shortzy(api_key=api, base_site=url)
-    return await shortzy.convert(link)
+    return await Shortzy(api_key=api, base_site=url).convert(link)
 
 
 # ======================================================
