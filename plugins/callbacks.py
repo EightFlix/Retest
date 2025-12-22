@@ -9,6 +9,7 @@ from hydrogram.types import (
     CallbackQuery,
     InputMediaPhoto
 )
+from hydrogram.errors import MessageNotModified
 
 from info import (
     ADMINS,
@@ -16,7 +17,6 @@ from info import (
     URL,
     BIN_CHANNEL,
     QUALITY,
-    LANGUAGES,
     script
 )
 
@@ -26,7 +26,42 @@ from database.ia_filterdb import db_count_documents
 
 
 # ======================================================
-# 🔘 UI HELPERS (CLEAN & MINIMAL)
+# 🛡 SAFE EDIT HELPERS (NO MESSAGE_NOT_MODIFIED)
+# ======================================================
+
+async def safe_edit_media(msg, media, reply_markup=None):
+    try:
+        if not msg or not media:
+            return
+        await msg.edit_media(media=media, reply_markup=reply_markup)
+    except MessageNotModified:
+        pass
+    except Exception:
+        pass
+
+
+async def safe_edit_caption(msg, caption, reply_markup=None):
+    try:
+        if msg.caption == caption:
+            return
+        await msg.edit_caption(caption, reply_markup=reply_markup)
+    except MessageNotModified:
+        pass
+    except Exception:
+        pass
+
+
+async def safe_edit_markup(msg, reply_markup):
+    try:
+        await msg.edit_reply_markup(reply_markup)
+    except MessageNotModified:
+        pass
+    except Exception:
+        pass
+
+
+# ======================================================
+# 🔘 UI HELPERS
 # ======================================================
 
 def start_buttons():
@@ -49,25 +84,6 @@ def start_buttons():
 def back_btn(cb="start"):
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("« Back", callback_data=cb)]]
-    )
-
-
-# ======================================================
-# 🚀 /START
-# ======================================================
-
-@Client.on_message(filters.command("start") & filters.private)
-async def start_command(client, message):
-    if not await db.is_user_exist(message.from_user.id):
-        await db.add_user(message.from_user.id, message.from_user.first_name)
-
-    await message.reply_photo(
-        photo=random.choice(PICS),
-        caption=script.START_TXT.format(
-            message.from_user.mention,
-            get_wish()
-        ),
-        reply_markup=start_buttons()
     )
 
 
@@ -95,7 +111,7 @@ async def cb_handler(client: Client, query: CallbackQuery):
     if data == "pages":
         return await query.answer()
 
-    # ---------------- STREAM (PREMIUM) ----------------
+    # ---------------- STREAM ----------------
     if data.startswith("stream#"):
         if not await is_premium(uid, client):
             return await query.answer(
@@ -112,7 +128,8 @@ async def cb_handler(client: Client, query: CallbackQuery):
         watch = f"{URL}watch/{msg.id}"
         download = f"{URL}download/{msg.id}"
 
-        await query.edit_message_reply_markup(
+        await safe_edit_markup(
+            query.message,
             InlineKeyboardMarkup(
                 [
                     [
@@ -127,7 +144,8 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
     # ---------------- HELP ----------------
     if data == "help":
-        return await query.message.edit_media(
+        await safe_edit_media(
+            query.message,
             InputMediaPhoto(
                 random.choice(PICS),
                 caption=script.HELP_TXT.format(query.from_user.mention)
@@ -142,25 +160,31 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 ]
             )
         )
+        return
 
     if data == "user_cmds":
-        return await query.message.edit_caption(
+        await safe_edit_caption(
+            query.message,
             script.USER_COMMAND_TXT,
             reply_markup=back_btn("help")
         )
+        return
 
     if data == "admin_cmds":
         if uid not in ADMINS:
             return await query.answer("Admins only", show_alert=True)
 
-        return await query.message.edit_caption(
+        await safe_edit_caption(
+            query.message,
             script.ADMIN_COMMAND_TXT,
             reply_markup=back_btn("help")
         )
+        return
 
     # ---------------- ABOUT ----------------
     if data == "about":
-        return await query.message.edit_media(
+        await safe_edit_media(
+            query.message,
             InputMediaPhoto(
                 random.choice(PICS),
                 caption=script.MY_ABOUT_TXT
@@ -175,16 +199,20 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 ]
             )
         )
+        return
 
     if data == "owner_info":
-        return await query.message.edit_caption(
+        await safe_edit_caption(
+            query.message,
             script.MY_OWNER_TXT,
             reply_markup=back_btn("about")
         )
+        return
 
     # ---------------- BACK TO START ----------------
     if data == "start":
-        return await query.message.edit_media(
+        await safe_edit_media(
+            query.message,
             InputMediaPhoto(
                 random.choice(PICS),
                 caption=script.START_TXT.format(
@@ -194,15 +222,13 @@ async def cb_handler(client: Client, query: CallbackQuery):
             ),
             reply_markup=start_buttons()
         )
+        return
 
-    # ---------------- SMART GROUPING (QUALITY UI HOOK) ----------------
+    # ---------------- QUALITY GROUPING ----------------
     if data.startswith("group_quality#"):
         _, search, req = data.split("#")
         if int(req) != uid:
-            return await query.answer(
-                "This result is not for you",
-                show_alert=True
-            )
+            return await query.answer("Not for you", show_alert=True)
 
         btn = []
         for i in range(0, len(QUALITY), 2):
@@ -223,10 +249,16 @@ async def cb_handler(client: Client, query: CallbackQuery):
 
         btn.append([InlineKeyboardButton("❌ Close", callback_data="close_data")])
 
-        return await query.message.edit_text(
-            "<b>Select Quality 👇</b>",
-            reply_markup=InlineKeyboardMarkup(btn)
-        )
+        try:
+            if query.message.text != "<b>Select Quality 👇</b>":
+                await query.message.edit_text(
+                    "<b>Select Quality 👇</b>",
+                    reply_markup=InlineKeyboardMarkup(btn)
+                )
+        except MessageNotModified:
+            pass
+
+        return
 
     # ---------------- ADMIN STATS (POPUP) ----------------
     if data == "stats_callback":
