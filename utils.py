@@ -39,12 +39,12 @@ class temp(object):
     SETTINGS = {}
     VERIFICATIONS = {}
 
-    FILES = {}          # msg_id -> delivery data
-    PREMIUM = {}        # ⚡ RAM premium cache
-    KEYWORDS = {}       # 🧠 learned search keywords (RAM)
+    FILES = {}
+    PREMIUM = {}
+    KEYWORDS = {}
 
-    LANG_USER = {}      # user_id -> hi/en
-    LANG_GROUP = {}     # group_id -> hi/en
+    LANG_USER = {}
+    LANG_GROUP = {}
 
     INDEX_STATS = {
         "running": False,
@@ -61,11 +61,11 @@ class temp(object):
 # ======================================================
 
 GRACE_PERIOD = timedelta(minutes=20)
-PREMIUM_CACHE_TTL = 300   # 5 minutes
+PREMIUM_CACHE_TTL = 300
 
 
 # ======================================================
-# ⚡ ULTRA FAST PREMIUM CHECK (RAM → DB)
+# ⚡ ULTRA FAST PREMIUM CHECK
 # ======================================================
 
 async def is_premium(user_id, bot=None) -> bool:
@@ -104,7 +104,7 @@ async def is_premium(user_id, bot=None) -> bool:
 
 
 # ======================================================
-# 🛡 PREMIUM AUTO DOWNGRADE WATCHER
+# 🛡 PREMIUM WATCHER
 # ======================================================
 
 async def check_premium(bot):
@@ -139,7 +139,7 @@ async def check_premium(bot):
 
 
 # ======================================================
-# 🔔 SMART PREMIUM EXPIRY REMINDER
+# 🔔 PREMIUM EXPIRY REMINDER
 # ======================================================
 
 REMINDER_STEPS = [
@@ -170,7 +170,6 @@ async def premium_expiry_reminder(bot):
                 for tag, delta in REMINDER_STEPS:
                     if last == tag:
                         continue
-
                     if expire - delta <= now < expire:
                         try:
                             await bot.send_message(
@@ -181,7 +180,6 @@ async def premium_expiry_reminder(bot):
                             )
                         except:
                             pass
-
                         plan["last_reminder"] = tag
                         db.update_plan(uid, plan)
                         break
@@ -192,7 +190,24 @@ async def premium_expiry_reminder(bot):
 
 
 # ======================================================
-# 🧠 SMART SEARCH LEARNING
+# ✅ VERIFY SYSTEM (RESTORED)
+# ======================================================
+
+async def get_verify_status(user_id: int):
+    if user_id not in temp.VERIFICATIONS:
+        temp.VERIFICATIONS[user_id] = await db.get_verify_status(user_id)
+    return temp.VERIFICATIONS[user_id]
+
+
+async def update_verify_status(user_id: int, **kwargs):
+    verify = await get_verify_status(user_id)
+    verify.update(kwargs)
+    temp.VERIFICATIONS[user_id] = verify
+    await db.update_verify_status(user_id, verify)
+
+
+# ======================================================
+# 🧠 SEARCH LEARNING + SUGGESTIONS
 # ======================================================
 
 def learn_keywords(text: str):
@@ -204,20 +219,16 @@ def learn_keywords(text: str):
 def fast_similarity(a: str, b: str) -> int:
     if a == b:
         return 100
-
     a_set = set(a.split())
     b_set = set(b.split())
     common = a_set & b_set
     if not common:
         return 0
-
     score = int((len(common) / max(len(a_set), len(b_set))) * 100)
-
     for x in a_set:
         for y in b_set:
             if x.startswith(y) or y.startswith(x):
                 score += 10
-
     return min(score, 100)
 
 
@@ -231,7 +242,7 @@ def suggest_query(query: str):
 
 
 # ======================================================
-# 🌍 LANGUAGE HELPERS
+# 🌍 LANGUAGE SYSTEM
 # ======================================================
 
 def set_user_lang(user_id: int, lang: str):
@@ -242,7 +253,7 @@ def set_group_lang(group_id: int, lang: str):
     temp.LANG_GROUP[group_id] = lang
 
 
-def get_lang(user_id: int = None, group_id: int = None, default="en"):
+def get_lang(user_id=None, group_id=None, default="en"):
     if user_id and user_id in temp.LANG_USER:
         return temp.LANG_USER[user_id]
     if group_id and group_id in temp.LANG_GROUP:
@@ -310,7 +321,7 @@ async def cleanup_files_memory():
 
 
 # ======================================================
-# 📢 BROADCAST HELPERS (FIXED)
+# 📢 BROADCAST HELPERS
 # ======================================================
 
 async def broadcast_messages(user_id, message, pin=False):
