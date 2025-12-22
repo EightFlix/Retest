@@ -83,8 +83,8 @@ class Database:
     # 🧠 INIT COLLECTIONS
     # =========================
     def __init__(self):
-        if not dbase:
-            raise Exception("Database not initialized")
+        if dbase is None:
+    raise Exception("Database not connected")
         
         self.users = dbase.users
         self.groups = dbase.groups
