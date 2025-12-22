@@ -74,7 +74,7 @@ if not LOG_CHANNEL:
     exit()
 LOG_CHANNEL = int(LOG_CHANNEL)
 
-# 🔥 NEW: INDEX LOG CHANNEL
+# 🔥 INDEX LOG CHANNEL
 INDEX_LOG_CHANNEL = environ.get('INDEX_LOG_CHANNEL', '')
 if not INDEX_LOG_CHANNEL:
     logger.info('INDEX_LOG_CHANNEL not set, using LOG_CHANNEL')
@@ -95,8 +95,18 @@ if not DATA_DATABASE_URL:
     logger.error('DATA_DATABASE_URL is missing')
     exit()
 
-DATABASE_NAME = environ.get('DATABASE_NAME', "Cluster0")
-COLLECTION_NAME = environ.get('COLLECTION_NAME', 'Files')
+DATABASE_NAME = environ.get('DATABASE_NAME', "bot_db")
+
+# 🔥 MAIN COLLECTION (Backward Compatible)
+COLLECTION_NAME = environ.get('COLLECTION_NAME', 'files')
+
+# 🔥 FUTURE READY (Hot / Cold)
+FILES_COLLECTION = environ.get('FILES_COLLECTION', 'files_hot')
+FILES_BACKUP_COLLECTION = environ.get('FILES_BACKUP_COLLECTION', 'files_cold')
+
+USERS_COLLECTION = environ.get('USERS_COLLECTION', 'users')
+CHATS_COLLECTION = environ.get('CHATS_COLLECTION', 'chats')
+BANS_COLLECTION = environ.get('BANS_COLLECTION', 'bans')
 
 # ================= LINKS =================
 
