@@ -7,13 +7,9 @@ from datetime import datetime, timedelta
 from hydrogram.errors import UserNotParticipant, FloodWait
 from hydrogram.types import InlineKeyboardButton
 
-from info import (
-    ADMINS,
-    IS_PREMIUM,
-    TIME_ZONE
-)
+from info import ADMINS, IS_PREMIUM, TIME_ZONE
 
-# ---- OPTIONAL SHORTLINK CONFIG (SAFE IMPORT) ----
+# ---- OPTIONAL SHORTLINK CONFIG ----
 try:
     from info import SHORTLINK_API, SHORTLINK_URL
 except ImportError:
@@ -25,7 +21,7 @@ from shortzy import Shortzy
 
 
 # ======================================================
-# 🧠 TEMP RUNTIME CACHE (GLOBAL STATE)
+# 🧠 GLOBAL RUNTIME STATE (SAFE)
 # ======================================================
 
 class temp(object):
@@ -38,10 +34,10 @@ class temp(object):
     B_NAME = None
 
     # moderation
-    BANNED_USERS = []
-    BANNED_CHATS = []
+    BANNED_USERS = set()
+    BANNED_CHATS = set()
 
-    # index / broadcast flags
+    # broadcast / index flags
     CANCEL = False
     USERS_CANCEL = False
     GROUPS_CANCEL = False
@@ -49,12 +45,15 @@ class temp(object):
     # runtime caches
     SETTINGS = {}
     VERIFICATIONS = {}
+
+    # 🔥 FILE DELIVERY CACHE
+    # file_id -> {"user": int, "msg": int, "expire": ts}
     FILES = {}
 
-    # premium cache
+    # premium cache (optional)
     PREMIUM = {}
 
-    # 🔥 INDEX LIVE STATS (ADMIN DASHBOARD USES THIS)
+    # 🔥 INDEX LIVE STATS (ADMIN DASHBOARD)
     INDEX_STATS = {
         "running": False,
         "start": 0,
@@ -66,10 +65,33 @@ class temp(object):
 
 
 # ======================================================
-# 👑 PREMIUM CORE CONFIG
+# 👑 PREMIUM CONFIG
 # ======================================================
 
 GRACE_PERIOD = timedelta(minutes=20)
+
+
+# ======================================================
+# 🔁 AUTO CLEANUP WORKER (FILES MEMORY)
+# ======================================================
+
+async def cleanup_files_memory():
+    """
+    Auto removes expired temp.FILES entries
+    """
+    while True:
+        try:
+            now = int(datetime.utcnow().timestamp())
+            expired = [
+                k for k, v in temp.FILES.items()
+                if v.get("expire", 0) <= now
+            ]
+            for k in expired:
+                temp.FILES.pop(k, None)
+        except:
+            pass
+
+        await asyncio.sleep(60)
 
 
 # ======================================================
@@ -80,8 +102,8 @@ async def generate_qr_code(data: str):
     qr = qrcode.QRCode(box_size=10, border=4)
     qr.add_data(data)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
 
+    img = qr.make_image(fill_color="black", back_color="white")
     bio = BytesIO()
     bio.name = "qr.png"
     img.save(bio, "PNG")
@@ -96,7 +118,6 @@ async def generate_qr_code(data: str):
 async def is_subscribed(bot, query):
     buttons = []
 
-    # premium bypass
     if await is_premium(query.from_user.id, bot):
         return buttons
 
@@ -139,56 +160,53 @@ async def update_verify_status(user_id, **kwargs):
 
 
 # ======================================================
-# 👑 PREMIUM CHECK (SYNCED)
+# 👑 PREMIUM CHECK (SINGLE SOURCE)
 # ======================================================
 
 async def is_premium(user_id, bot=None) -> bool:
     if not IS_PREMIUM or user_id in ADMINS:
         return True
 
-    mp = db.get_plan(user_id)
-    if not mp or not mp.get("premium"):
+    plan = db.get_plan(user_id)
+    if not plan or not plan.get("premium"):
         return False
 
-    expire = mp.get("expire")
+    expire = plan.get("expire")
     if not expire:
         return False
 
     if isinstance(expire, (int, float)):
         expire = datetime.utcfromtimestamp(expire)
 
-    now = datetime.utcnow()
-
-    if now <= expire + GRACE_PERIOD:
+    if datetime.utcnow() <= expire + GRACE_PERIOD:
         return True
 
-    mp.update({
+    # auto cleanup
+    plan.update({
         "premium": False,
-        "plan": "",
         "expire": "",
+        "plan": "",
         "last_reminder": "expired"
     })
-    db.update_plan(user_id, mp)
+    db.update_plan(user_id, plan)
     return False
 
 
 # ======================================================
-# 🛡️ LIGHT PREMIUM GUARDIAN
+# 🛡️ BACKGROUND PREMIUM WATCHER
 # ======================================================
 
 async def check_premium(bot):
     while True:
         try:
-            users = db.get_premium_users()
             now = datetime.utcnow()
-
-            for u in users:
+            for u in db.get_premium_users():
                 uid = u["id"]
                 if uid in ADMINS:
                     continue
 
-                mp = u.get("status", {})
-                expire = mp.get("expire")
+                plan = u.get("plan", {})
+                expire = plan.get("expire")
                 if not expire:
                     continue
 
@@ -196,12 +214,8 @@ async def check_premium(bot):
                     expire = datetime.utcfromtimestamp(expire)
 
                 if now > expire + GRACE_PERIOD:
-                    mp.update({
-                        "premium": False,
-                        "plan": "",
-                        "expire": ""
-                    })
-                    db.update_plan(uid, mp)
+                    plan.update({"premium": False, "expire": "", "plan": ""})
+                    db.update_plan(uid, plan)
         except:
             pass
 
