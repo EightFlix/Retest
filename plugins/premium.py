@@ -1,6 +1,5 @@
 import qrcode
 import secrets
-import asyncio
 from io import BytesIO
 from datetime import datetime, timedelta
 
@@ -20,6 +19,7 @@ from info import (
 from database.users_chats_db import db
 from utils import is_premium
 
+
 # ======================================================
 # 🔧 CONFIG
 # ======================================================
@@ -32,11 +32,12 @@ REMINDER_STEPS = [
     ("10m", timedelta(minutes=10)),
 ]
 
+
 # ======================================================
 # 🧠 HELPERS
 # ======================================================
 
-def fmt(dt: datetime) -> str:
+def fmt(dt) -> str:
     if isinstance(dt, (int, float)):
         dt = datetime.utcfromtimestamp(dt)
     return dt.strftime("%d %b %Y, %I:%M %p")
@@ -70,6 +71,7 @@ def buy_button():
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("💰 Buy / Renew Premium", callback_data="buy_premium")]]
     )
+
 
 # ======================================================
 # 👤 USER COMMANDS
@@ -111,13 +113,14 @@ async def myplan_cmd(client, message):
         f"⏰ Valid Till: {fmt(plan.get('expire'))}"
     )
 
+
 # ======================================================
 # 🧾 INVOICE / HISTORY
 # ======================================================
 
 @Client.on_message(filters.command("invoice") & filters.private)
 async def invoice_cmd(client, message):
-    plan = db.get_plan(message.from_user.id)
+    plan = db.get_plan(message.from_user.id) or {}
     invoices = plan.get("invoices", [])
 
     if not invoices:
@@ -126,9 +129,7 @@ async def invoice_cmd(client, message):
     if len(message.command) > 1 and message.command[1] == "history":
         text = "🧾 **Invoice History**\n\n"
         for inv in invoices[-5:][::-1]:
-            text += (
-                f"• `{inv['id']}` | ₹{inv['amount']} | {inv['plan']}\n"
-            )
+            text += f"• `{inv['id']}` | ₹{inv['amount']} | {inv['plan']}\n"
         return await message.reply(text)
 
     inv = invoices[-1]
@@ -139,6 +140,7 @@ async def invoice_cmd(client, message):
         f"💰 Amount: ₹{inv['amount']}\n"
         f"⏰ Expire: {inv['expire']}"
     )
+
 
 # ======================================================
 # 💰 BUY / RENEW FLOW
@@ -166,10 +168,7 @@ async def buy_premium(client, query: CallbackQuery):
     days = max(1, duration.days)
     amount = days * PRE_DAY_AMOUNT
 
-    upi = (
-        f"upi://pay?pa={UPI_ID}&pn={UPI_NAME}"
-        f"&am={amount}&cu=INR"
-    )
+    upi = f"upi://pay?pa={UPI_ID}&pn={UPI_NAME}&am={amount}&cu=INR"
 
     qr = qrcode.make(upi)
     bio = BytesIO()
@@ -224,6 +223,7 @@ async def buy_premium(client, query: CallbackQuery):
 
     await receipt.reply("✅ Screenshot sent to admin. Please wait.")
 
+
 # ======================================================
 # 🛂 ADMIN APPROVAL
 # ======================================================
@@ -253,7 +253,7 @@ async def admin_approve(client, query: CallbackQuery):
         "created_at": now
     }
 
-    old = db.get_plan(uid)
+    old = db.get_plan(uid) or {}
     invoices = old.get("invoices", [])
     invoices.append(invoice)
 
