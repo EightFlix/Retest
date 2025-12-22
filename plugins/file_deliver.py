@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import datetime, timedelta
 
 from hydrogram import Client, filters
@@ -18,12 +19,9 @@ from utils import get_settings, get_size, get_shortlink, get_readable_time, temp
 GRACE_PERIOD = timedelta(minutes=30)
 RESEND_EXPIRE_TIME = 60  # seconds
 
-if not hasattr(temp, "FILES"):
-    temp.FILES = {}
-
 
 # ======================================================
-# 🧠 PREMIUM CHECK (WITH GRACE)
+# 🧠 PREMIUM CHECK
 # ======================================================
 
 async def has_premium_or_grace(user_id: int) -> bool:
@@ -35,18 +33,14 @@ async def has_premium_or_grace(user_id: int) -> bool:
         return False
 
     expire = plan.get("expire")
-    if not expire:
-        return False
-
     if isinstance(expire, (int, float)):
         expire = datetime.utcfromtimestamp(expire)
 
-    now = datetime.utcnow()
-    return now <= expire or now <= expire + GRACE_PERIOD
+    return expire and datetime.utcnow() <= expire + GRACE_PERIOD
 
 
 # ======================================================
-# ⏱ COUNTDOWN TASK (CAPTION BASED)
+# ⏱ COUNTDOWN TASK
 # ======================================================
 
 async def countdown_task(msg_id: int, seconds: int):
@@ -67,8 +61,6 @@ async def countdown_task(msg_id: int, seconds: int):
                 )
             except MessageNotModified:
                 pass
-            except:
-                return
     except asyncio.CancelledError:
         return
 
@@ -87,9 +79,8 @@ async def file_button_handler(client: Client, query: CallbackQuery):
 
     settings = await get_settings(query.message.chat.id)
     uid = query.from_user.id
-    premium_ok = await has_premium_or_grace(uid)
 
-    if settings.get("shortlink") and not premium_ok:
+    if settings.get("shortlink") and not await has_premium_or_grace(uid):
         link = await get_shortlink(
             settings.get("url"),
             settings.get("api"),
@@ -121,19 +112,30 @@ async def start_file_delivery(client: Client, message):
         _, grp_id, file_id = data.split("_", 2)
         grp_id = int(grp_id)
     except:
-        return await message.reply("❌ Invalid file link")
+        return
 
+    await deliver_file(client, message.from_user.id, grp_id, file_id)
+
+    try:
+        await message.delete()
+    except:
+        pass
+
+
+# ======================================================
+# 🚚 CORE DELIVERY (USED BY RESEND)
+# ======================================================
+
+async def deliver_file(client, uid, grp_id, file_id):
     file = await get_file_details(file_id)
     if not file:
-        return await message.reply("❌ File not found")
+        return
 
     settings = await get_settings(grp_id)
-    uid = message.from_user.id
-
     if settings.get("shortlink") and not await has_premium_or_grace(uid):
-        return await message.reply("🔒 Premium required")
+        return
 
-    # 🔥 clean previous file of same user
+    # clean old session
     for k, v in list(temp.FILES.items()):
         if v["owner"] == uid:
             try:
@@ -154,9 +156,7 @@ async def start_file_delivery(client: Client, message):
 
     buttons = []
     if IS_STREAM:
-        buttons.append([
-            InlineKeyboardButton("▶️ Watch / Download", callback_data=f"stream#{file_id}")
-        ])
+        buttons.append([InlineKeyboardButton("▶️ Watch / Download", callback_data=f"stream#{file_id}")])
     buttons.append([InlineKeyboardButton("❌ Close", callback_data="close_data")])
 
     markup = InlineKeyboardMarkup(buttons)
@@ -170,8 +170,6 @@ async def start_file_delivery(client: Client, message):
         reply_markup=markup
     )
 
-    await message.delete()
-
     task = asyncio.create_task(countdown_task(sent.id, PM_FILE_DELETE_TIME))
 
     temp.FILES[sent.id] = {
@@ -180,10 +178,10 @@ async def start_file_delivery(client: Client, message):
         "file": sent,
         "task": task,
         "base_caption": base_caption,
-        "markup": markup
+        "markup": markup,
+        "expire": int(time.time()) + PM_FILE_DELETE_TIME
     }
 
-    # ================= FINAL DELETE =================
     await asyncio.sleep(PM_FILE_DELETE_TIME)
 
     data = temp.FILES.pop(sent.id, None)
@@ -191,12 +189,11 @@ async def start_file_delivery(client: Client, message):
         return
 
     try:
-        await data["file"].delete()
+        await sent.delete()
     except:
         pass
 
-    # 🔁 Resend button (valid 60s)
-    resend_msg = await client.send_message(
+    resend = await client.send_message(
         uid,
         "⌛ <b>File expired</b>",
         reply_markup=InlineKeyboardMarkup([
@@ -206,13 +203,13 @@ async def start_file_delivery(client: Client, message):
 
     await asyncio.sleep(RESEND_EXPIRE_TIME)
     try:
-        await resend_msg.delete()
+        await resend.delete()
     except:
         pass
 
 
 # ======================================================
-# 🔁 RESEND HANDLER (NO /START)
+# 🔁 RESEND HANDLER
 # ======================================================
 
 @Client.on_callback_query(filters.regex(r"^resend#"))
@@ -220,12 +217,7 @@ async def resend_handler(client, query: CallbackQuery):
     file_id = query.data.split("#", 1)[1]
     uid = query.from_user.id
 
-    file = await get_file_details(file_id)
-    if not file:
-        return await query.answer("Expired", show_alert=True)
-
+    await query.answer()
     await query.message.delete()
-    await start_file_delivery(
-        client,
-        query.message.reply_to_message or query.message
-    )
+
+    await deliver_file(client, uid, query.message.chat.id, file_id)
