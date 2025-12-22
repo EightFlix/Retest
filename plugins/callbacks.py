@@ -26,7 +26,7 @@ from database.ia_filterdb import db_count_documents
 
 
 # ======================================================
-# 🛡 SAFE EDIT HELPERS (NO MESSAGE_NOT_MODIFIED)
+# 🛡 SAFE EDIT HELPERS
 # ======================================================
 
 async def safe_edit_media(msg, media, reply_markup=None):
@@ -96,9 +96,31 @@ async def cb_handler(client: Client, query: CallbackQuery):
     data = query.data
     uid = query.from_user.id
 
-    # ---------------- CLOSE ----------------
+    # ==================================================
+    # ❌ CLOSE (FULL CLEANUP)
+    # ==================================================
     if data == "close_data":
         await query.answer("Closed")
+
+        # ---- PM FILE CLEANUP ----
+        data_mem = temp.FILES.pop(uid, None)
+        if data_mem:
+            try:
+                data_mem["task"].cancel()
+            except:
+                pass
+
+            try:
+                await data_mem["file"].delete()
+            except:
+                pass
+
+            try:
+                await data_mem["notice"].delete()
+            except:
+                pass
+
+        # ---- UI CLEANUP ----
         try:
             await query.message.delete()
             if query.message.reply_to_message:
@@ -111,7 +133,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
     if data == "pages":
         return await query.answer()
 
-    # ---------------- STREAM ----------------
+    # ==================================================
+    # ▶️ STREAM (PREMIUM)
+    # ==================================================
     if data.startswith("stream#"):
         if not await is_premium(uid, client):
             return await query.answer(
@@ -142,7 +166,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
         )
         return await query.answer("Links ready")
 
-    # ---------------- HELP ----------------
+    # ==================================================
+    # 🆘 HELP
+    # ==================================================
     if data == "help":
         await safe_edit_media(
             query.message,
@@ -181,7 +207,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
         )
         return
 
-    # ---------------- ABOUT ----------------
+    # ==================================================
+    # 📚 ABOUT
+    # ==================================================
     if data == "about":
         await safe_edit_media(
             query.message,
@@ -209,7 +237,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
         )
         return
 
-    # ---------------- BACK TO START ----------------
+    # ==================================================
+    # 🔙 BACK TO START
+    # ==================================================
     if data == "start":
         await safe_edit_media(
             query.message,
@@ -224,7 +254,9 @@ async def cb_handler(client: Client, query: CallbackQuery):
         )
         return
 
-    # ---------------- QUALITY GROUPING ----------------
+    # ==================================================
+    # 🎞 QUALITY GROUPING
+    # ==================================================
     if data.startswith("group_quality#"):
         _, search, req = data.split("#")
         if int(req) != uid:
@@ -257,10 +289,11 @@ async def cb_handler(client: Client, query: CallbackQuery):
                 )
         except MessageNotModified:
             pass
-
         return
 
-    # ---------------- ADMIN STATS (POPUP) ----------------
+    # ==================================================
+    # 📊 ADMIN STATS (POPUP)
+    # ==================================================
     if data == "stats_callback":
         if uid not in ADMINS:
             return await query.answer("Admins only", show_alert=True)
