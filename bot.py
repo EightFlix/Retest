@@ -19,14 +19,14 @@ from aiohttp import web
 
 from web import web_app
 from info import API_ID, API_HASH, BOT_TOKEN, PORT, LOG_CHANNEL, ADMINS
+
 from utils import (
     temp,
-    check_premium,
-    cleanup_files_memory   # 🔥 MEMORY LEAK GUARD
+    cleanup_files_memory,
+    premium_expiry_reminder   # 🔔 SMART REMINDER
 )
-from database.users_chats_db import db
 
-# 🔴 IMPORTANT: banned worker
+from database.users_chats_db import db
 from plugins.banned import auto_unban_worker
 
 
@@ -89,13 +89,13 @@ class Bot(Client):
         # 🔁 BACKGROUND TASKS
         # ==========================
 
-        # Premium expiry watcher
-        asyncio.create_task(check_premium(self))
-
-        # 🔥 temp.FILES memory guard
+        # 🔥 FILE MEMORY LEAK GUARD
         asyncio.create_task(cleanup_files_memory())
 
-        # Auto unban worker
+        # 🔔 SMART PREMIUM EXPIRY REMINDERS
+        asyncio.create_task(premium_expiry_reminder(self))
+
+        # 🚫 AUTO UNBAN WORKER
         asyncio.create_task(auto_unban_worker(self))
 
         # ---- admin notify ----
