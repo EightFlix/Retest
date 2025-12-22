@@ -5,22 +5,10 @@ from hydrogram import Client, filters
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from hydrogram.errors import MessageNotModified
 
-from info import (
-    IS_STREAM,
-    PM_FILE_DELETE_TIME,
-    PROTECT_CONTENT,
-    ADMINS
-)
-
+from info import IS_STREAM, PM_FILE_DELETE_TIME, PROTECT_CONTENT, ADMINS
 from database.ia_filterdb import get_file_details
 from database.users_chats_db import db
-from utils import (
-    get_settings,
-    get_size,
-    get_shortlink,
-    get_readable_time,
-    temp
-)
+from utils import get_settings, get_size, get_shortlink, get_readable_time, temp
 
 # ======================================================
 # 🔐 CONFIG
@@ -28,12 +16,11 @@ from utils import (
 
 GRACE_PERIOD = timedelta(minutes=30)
 
-# runtime memory
 if not hasattr(temp, "FILES"):
     temp.FILES = {}
 
 # ======================================================
-# 🧠 PREMIUM CHECK
+# 🧠 PREMIUM / ADMIN CHECK
 # ======================================================
 
 async def has_premium_or_grace(user_id):
@@ -45,36 +32,28 @@ async def has_premium_or_grace(user_id):
         return False
 
     expire = plan.get("expire")
-    if not expire:
-        return False
-
     if isinstance(expire, (int, float)):
         expire = datetime.utcfromtimestamp(expire)
 
-    now = datetime.utcnow()
-    return now <= expire or now <= expire + GRACE_PERIOD
+    return expire and datetime.utcnow() <= expire + GRACE_PERIOD
 
 
 # ======================================================
-# ⏱️ COUNTDOWN TASK
+# ⏱️ COUNTDOWN (LIVE EDIT)
 # ======================================================
 
-async def countdown_task(user_id, seconds):
+async def countdown_task(uid, seconds):
     try:
         while seconds > 0:
             await asyncio.sleep(60)
             seconds -= 60
 
-            data = temp.FILES.get(user_id)
+            data = temp.FILES.get(uid)
             if not data:
                 return
 
-            notice = data.get("notice")
-            if not notice:
-                return
-
             try:
-                await notice.edit(
+                await data["notice"].edit(
                     f"⚠️ File will be deleted in {get_readable_time(seconds)}"
                 )
             except MessageNotModified:
@@ -92,27 +71,25 @@ async def countdown_task(user_id, seconds):
 @Client.on_callback_query(filters.regex(r"^file#"))
 async def file_button_handler(client: Client, query: CallbackQuery):
     _, file_id = query.data.split("#", 1)
+    uid = query.from_user.id
 
     file = await get_file_details(file_id)
     if not file:
         return await query.answer("❌ File not found", show_alert=True)
 
     settings = await get_settings(query.message.chat.id)
-    uid = query.from_user.id
-
     premium_ok = await has_premium_or_grace(uid)
 
-    # free user → shortlink
+    # FREE USER → SHORTLINK
     if settings.get("shortlink") and not premium_ok:
         link = await get_shortlink(
             settings.get("url"),
             settings.get("api"),
             f"https://t.me/{temp.U_NAME}?start=file_{query.message.chat.id}_{file_id}"
         )
-
         return await query.message.reply_text(
-            f"<b>📁 File:</b> {file.get('file_name')}\n"
-            f"<b>📦 Size:</b> {get_size(file.get('file_size', 0))}\n\n"
+            f"<b>📁 File:</b> {file['file_name']}\n"
+            f"<b>📦 Size:</b> {get_size(file['file_size'])}\n\n"
             "🔓 Unlock below:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🚀 Get File", url=link)],
@@ -145,18 +122,18 @@ async def start_file_delivery(client, message):
     except:
         return await message.reply("❌ Invalid link")
 
+    uid = message.from_user.id
+
     file = await get_file_details(file_id)
     if not file:
         return await message.reply("❌ File not found")
 
     settings = await get_settings(grp_id)
-    uid = message.from_user.id
-
     premium_ok = await has_premium_or_grace(uid)
 
     if settings.get("shortlink") and not premium_ok:
         return await message.reply(
-            "🔒 Your premium has expired.",
+            "🔒 Premium expired.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⚡ Renew Premium", callback_data="buy_premium")]
             ])
@@ -166,7 +143,6 @@ async def start_file_delivery(client, message):
     caption_tpl = settings.get("caption") or "{file_name}\n\n{file_caption}"
     caption = caption_tpl.format(
         file_name=file.get("file_name", "File"),
-        file_size=get_size(file.get("file_size", 0)),
         file_caption=file.get("caption", "")
     )
 
@@ -189,13 +165,22 @@ async def start_file_delivery(client, message):
         f"⚠️ File will be deleted in {get_readable_time(PM_FILE_DELETE_TIME)}"
     )
 
-    # 🔥 auto delete /start message
+    # delete /start msg
     try:
         await message.delete()
     except:
         pass
 
-    # start countdown
+    # cleanup old file if exists
+    old = temp.FILES.pop(uid, None)
+    if old:
+        try:
+            old["task"].cancel()
+            await old["file"].delete()
+            await old["notice"].delete()
+        except:
+            pass
+
     task = asyncio.create_task(countdown_task(uid, PM_FILE_DELETE_TIME))
 
     temp.FILES[uid] = {
@@ -206,7 +191,6 @@ async def start_file_delivery(client, message):
         "task": task
     }
 
-    # final delete
     await asyncio.sleep(PM_FILE_DELETE_TIME)
 
     data = temp.FILES.pop(uid, None)
