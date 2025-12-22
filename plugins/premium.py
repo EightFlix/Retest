@@ -44,6 +44,9 @@ def fmt(dt) -> str:
 
 
 def parse_duration(text: str):
+    if not text:
+        return None
+
     text = text.lower().strip()
     num = int("".join(filter(str.isdigit, text)) or 0)
     if num <= 0:
@@ -103,8 +106,8 @@ async def myplan_cmd(client, message):
     if message.from_user.id in ADMINS:
         return await message.reply("👑 Lifetime Premium")
 
-    plan = db.get_plan(message.from_user.id)
-    if not plan or not plan.get("premium"):
+    plan = db.get_plan(message.from_user.id) or {}
+    if not plan.get("premium"):
         return await message.reply("❌ No active premium plan.")
 
     await message.reply(
