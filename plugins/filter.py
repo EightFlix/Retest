@@ -7,7 +7,13 @@ from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from info import ADMINS
 from database.users_chats_db import db
 from database.ia_filterdb import get_search_results
-from utils import get_size, is_premium, temp
+from utils import (
+    get_size,
+    is_premium,
+    temp,
+    learn_keywords,
+    suggest_query
+)
 
 RESULTS_PER_PAGE = 10
 RESULT_EXPIRE_TIME = 300   # 5 minutes
@@ -23,18 +29,19 @@ async def filter_handler(client, message):
         return
 
     user_id = message.from_user.id
-    search = message.text.strip().lower()
+    raw_search = message.text.strip().lower()
 
-    if len(search) < 2:
+    if len(raw_search) < 2:
         return
+
+    # 🔥 auto-learn keywords (RAM only)
+    learn_keywords(raw_search)
 
     # ==============================
     # 🚫 GROUP SEARCH (STRICT)
     # ==============================
     if message.chat.type in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
         stg = await db.get_settings(message.chat.id)
-
-        # 🔴 admin disabled search → FULL STOP
         if not stg or stg.get("search") is False:
             return
 
@@ -53,6 +60,9 @@ async def filter_handler(client, message):
         if user_id not in ADMINS:
             if not await is_premium(user_id, client):
                 return
+
+    # 🔥 smart multi-word normalize
+    search = " ".join(raw_search.split())
 
     await send_results(
         client=client,
@@ -76,7 +86,8 @@ async def send_results(
     offset,
     source_chat_id,
     source_chat_title,
-    message=None
+    message=None,
+    tried_fallback=False
 ):
     files, next_offset, total = await get_search_results(
         search,
@@ -84,12 +95,33 @@ async def send_results(
         max_results=RESULTS_PER_PAGE
     )
 
+    # ==============================
+    # 🧠 SMART FALLBACK (NO DB LOOP)
+    # ==============================
+    if not files and not tried_fallback:
+        alt = suggest_query(search)
+        if alt and alt != search:
+            return await send_results(
+                client=client,
+                chat_id=chat_id,
+                owner=owner,
+                search=alt,
+                offset=0,
+                source_chat_id=source_chat_id,
+                source_chat_title=source_chat_title,
+                message=message,
+                tried_fallback=True
+            )
+
     if not files:
         text = f"❌ <b>No results found for:</b>\n<code>{search}</code>"
         if message:
             return await message.edit_text(text, parse_mode=enums.ParseMode.HTML)
         return await client.send_message(chat_id, text, parse_mode=enums.ParseMode.HTML)
 
+    # ==============================
+    # 📄 PAGE INFO
+    # ==============================
     page = (offset // RESULTS_PER_PAGE) + 1
     total_pages = ceil(total / RESULTS_PER_PAGE)
 
@@ -99,7 +131,7 @@ async def send_results(
         f"📄 <b>Page :</b> <code>{page} / {total_pages}</code>\n\n"
     )
 
-    # -------- FILE LIST (WITH GAP) --------
+    # -------- FILE LIST --------
     for f in files:
         size = get_size(f["file_size"])
         link = f"https://t.me/{temp.U_NAME}?start=file_{source_chat_id}_{f['_id']}"
@@ -108,7 +140,7 @@ async def send_results(
     if source_chat_title:
         text += f"<b>Powered By :</b> {source_chat_title}"
 
-    # -------- PAGINATION BUTTONS --------
+    # -------- PAGINATION --------
     nav = []
 
     if offset > 0:
@@ -144,7 +176,7 @@ async def send_results(
             disable_web_page_preview=True,
             parse_mode=enums.ParseMode.HTML
         )
-        asyncio.create_task(auto_expire(msg, owner))
+        asyncio.create_task(auto_expire(msg))
 
 
 # =====================================================
@@ -185,9 +217,9 @@ async def pagination_handler(client, query):
 
 
 # =====================================================
-# ⏱ AUTO EXPIRE (FULL CLEAN)
+# ⏱ AUTO EXPIRE (HARD DELETE)
 # =====================================================
-async def auto_expire(message, owner):
+async def auto_expire(message):
     await asyncio.sleep(RESULT_EXPIRE_TIME)
 
     try:
@@ -195,10 +227,6 @@ async def auto_expire(message, owner):
         await message.edit_text("⌛ <i>This result has expired.</i>")
     except:
         return
-
-    # 🔒 block callbacks after expire
-    temp.EXPIRED = temp.EXPIRED if hasattr(temp, "EXPIRED") else set()
-    temp.EXPIRED.add(message.id)
 
     await asyncio.sleep(EXPIRE_DELETE_DELAY)
     try:
