@@ -24,7 +24,6 @@ async def index_start_cmd(bot, message):
     )
 
     try:
-        # ✅ FIXED listen
         src = await bot.listen(message.chat.id, timeout=120)
     except ListenerTimeout:
         return await ask.edit("⏰ Timeout. Run /index again.")
@@ -90,7 +89,7 @@ async def index_callback(bot, query):
         )
 
 # ======================================================
-# ⚙️ CORE INDEX
+# ⚙️ CORE INDEX (HYDROGRAM)
 # ======================================================
 async def run_indexing(bot, msg, chat_id, last_msg_id, skip):
 
@@ -100,14 +99,13 @@ async def run_indexing(bot, msg, chat_id, last_msg_id, skip):
 
     async with lock:
         try:
-            async for message in bot.iter_messages(
+            async for message in bot.get_chat_history(
                 chat_id,
-                offset_id=last_msg_id,
                 limit=last_msg_id
             ):
+                count += 1
 
-                if count < skip:
-                    count += 1
+                if count <= skip:
                     continue
 
                 if temp.CANCEL:
@@ -130,8 +128,6 @@ async def run_indexing(bot, msg, chat_id, last_msg_id, skip):
                     dup += 1
                 else:
                     err += 1
-
-                count += 1
 
                 if count % 40 == 0:
                     try:
