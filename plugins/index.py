@@ -1,37 +1,58 @@
 import time
 import asyncio
+from collections import deque
+from pymongo import MongoClient
+
 from hydrogram import Client, filters, enums
 from hydrogram.errors import FloodWait, MessageNotModified
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from info import ADMINS
+from info import ADMINS, DATA_DATABASE_URL, DATABASE_NAME
 from database.ia_filterdb import save_file
 from utils import get_readable_time
 
-LOCK = asyncio.Lock()
-CANCEL = False
+# =========================
+# GLOBAL STATE
+# =========================
 INDEX_STATE = {}
+INDEX_QUEUE = deque()
+ACTIVE_CHANNEL = None
+CANCEL = False
+QUEUE_LOCK = asyncio.Lock()
 
+# =========================
+# RESUME DB (SAFE)
+# =========================
+mongo = MongoClient(DATA_DATABASE_URL)
+db = mongo[DATABASE_NAME]
+resume_col = db["index_resume"]
 
-# =====================================================
+def get_resume_id(chat_id):
+    d = resume_col.find_one({"_id": chat_id})
+    return d["last_id"] if d else None
+
+def set_resume_id(chat_id, msg_id):
+    resume_col.update_one(
+        {"_id": chat_id},
+        {"$set": {"last_id": msg_id}},
+        upsert=True
+    )
+
+# =========================
 # /index COMMAND
-# =====================================================
+# =========================
 @Client.on_message(filters.command("index") & filters.private & filters.user(ADMINS))
 async def start_index(bot, message):
     uid = message.from_user.id
-    if LOCK.locked():
-        return await message.reply("⏳ Previous indexing running")
-
     INDEX_STATE[uid] = {"step": "WAIT_SOURCE"}
     await message.reply(
         "📤 Send **last channel message link**\n"
         "OR **forward last channel message**"
     )
 
-
-# =====================================================
+# =========================
 # STATE HANDLER
-# =====================================================
+# =========================
 @Client.on_message(filters.private & filters.user(ADMINS))
 async def index_flow(bot, message):
     uid = message.from_user.id
@@ -39,7 +60,7 @@ async def index_flow(bot, message):
     if not state:
         return
 
-    # ---------- STEP 1 ----------
+    # ---- STEP 1: SOURCE ----
     if state["step"] == "WAIT_SOURCE":
         try:
             if message.text and message.text.startswith("https://t.me"):
@@ -51,7 +72,6 @@ async def index_flow(bot, message):
             elif message.forward_from_chat and message.forward_from_chat.type == enums.ChatType.CHANNEL:
                 last_msg_id = message.forward_from_message_id
                 chat_id = message.forward_from_chat.id
-
             else:
                 return await message.reply("❌ Invalid link or forward")
 
@@ -69,70 +89,79 @@ async def index_flow(bot, message):
             "last_msg_id": last_msg_id,
             "title": chat.title
         }
-
         return await message.reply("⏩ Send skip message number (0 for none)")
 
-    # ---------- STEP 2 ----------
+    # ---- STEP 2: SKIP ----
     if state["step"] == "WAIT_SKIP":
         try:
             skip = int(message.text)
         except:
             return await message.reply("❌ Skip must be number")
 
-        chat_id = state["chat_id"]
-        last_msg_id = state["last_msg_id"]
-        title = state["title"]
+        job = {
+            "chat_id": state["chat_id"],
+            "last_msg_id": state["last_msg_id"],
+            "skip": skip,
+            "title": state["title"],
+            "reply_to": message
+        }
         INDEX_STATE.pop(uid, None)
 
-        btn = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ START", callback_data=f"idx#start#{chat_id}#{last_msg_id}#{skip}")],
-            [InlineKeyboardButton("❌ CANCEL", callback_data="idx#close")]
-        ])
-
-        return await message.reply(
-            f"📢 **Channel:** `{title}`\n"
-            f"📊 **Last Message ID:** `{last_msg_id}`\n\n"
-            f"Start indexing?",
-            reply_markup=btn
+        INDEX_QUEUE.append(job)
+        await message.reply(
+            f"📥 Added to queue\n"
+            f"📢 `{job['title']}`\n"
+            f"⏳ Position: `{len(INDEX_QUEUE)}`"
         )
 
+        await process_queue(bot)
 
-# =====================================================
-# CALLBACK
-# =====================================================
-@Client.on_callback_query(filters.regex("^idx#"))
-async def index_callback(bot, query):
-    global CANCEL
-    data = query.data.split("#")
+# =========================
+# QUEUE PROCESSOR
+# =========================
+async def process_queue(bot):
+    global ACTIVE_CHANNEL, CANCEL
 
-    if data[1] == "close":
-        return await query.message.edit("❌ Cancelled")
+    async with QUEUE_LOCK:
+        if ACTIVE_CHANNEL is not None:
+            return
+        if not INDEX_QUEUE:
+            return
 
-    _, _, chat_id, last_id, skip = data
-    await query.message.edit("⚡ Indexing started...")
-
-    async with LOCK:
+        job = INDEX_QUEUE.popleft()
+        ACTIVE_CHANNEL = job["chat_id"]
         CANCEL = False
-        await index_worker(
-            bot,
-            query.message,
-            int(chat_id),
-            int(last_id),
-            int(skip)
-        )
 
+    status = await job["reply_to"].reply(
+        f"⚡ **Indexing Started**\n📢 `{job['title']}`"
+    )
 
-# =====================================================
-# 🔥 MAIN INDEX WORKER (Hydrogram-safe)
-# =====================================================
+    await index_worker(
+        bot,
+        status,
+        job["chat_id"],
+        job["last_msg_id"],
+        job["skip"]
+    )
+
+    ACTIVE_CHANNEL = None
+    await process_queue(bot)
+
+# =========================
+# MAIN INDEX WORKER (RESUME + ETA)
+# =========================
 async def index_worker(bot, status, chat_id, last_msg_id, skip):
     global CANCEL
 
-    start = time.time()
+    start_time = time.time()
     saved = dup = err = nomedia = 0
     processed = 0
 
-    current_id = last_msg_id - skip
+    resume_from = get_resume_id(chat_id)
+    if resume_from and resume_from < last_msg_id:
+        current_id = resume_from
+    else:
+        current_id = last_msg_id - skip
 
     try:
         while current_id > 0:
@@ -150,14 +179,22 @@ async def index_worker(bot, status, chat_id, last_msg_id, skip):
 
             processed += 1
 
-            if processed % 30 == 0:
+            # ---- STATUS + ETA ----
+            if processed % 50 == 0:
+                elapsed = time.time() - start_time
+                speed = processed / elapsed if elapsed > 0 else 0
+                remaining = current_id
+                eta = remaining / speed if speed > 0 else 0
+
                 try:
                     btn = InlineKeyboardMarkup(
                         [[InlineKeyboardButton("🛑 STOP", callback_data="idx#cancel")]]
                     )
                     await status.edit(
-                        f"📊 Processed: `{processed}`\n"
-                        f"✅ Saved: `{saved}` | ♻️ Dup: `{dup}` | ❌ Err: `{err}`",
+                        f"📊 Scanned: `{processed}`\n"
+                        f"✅ `{saved}` | ♻️ `{dup}` | ❌ `{err}`\n"
+                        f"⚡ Speed: `{speed:.2f}/s`\n"
+                        f"⏳ ETA: `{get_readable_time(eta)}`",
                         reply_markup=btn
                     )
                 except MessageNotModified:
@@ -168,16 +205,9 @@ async def index_worker(bot, status, chat_id, last_msg_id, skip):
                 current_id -= 1
                 continue
 
-            if msg.media not in (
-                enums.MessageMediaType.VIDEO,
-                enums.MessageMediaType.DOCUMENT
-            ):
-                nomedia += 1
-                current_id -= 1
-                continue
-
             media = getattr(msg, msg.media.value, None)
             if not media:
+                nomedia += 1
                 current_id -= 1
                 continue
 
@@ -186,6 +216,7 @@ async def index_worker(bot, status, chat_id, last_msg_id, skip):
 
             if res == "suc":
                 saved += 1
+                set_resume_id(chat_id, current_id)
             elif res == "dup":
                 dup += 1
             else:
@@ -194,24 +225,24 @@ async def index_worker(bot, status, chat_id, last_msg_id, skip):
             current_id -= 1
 
     except Exception as e:
-        return await status.edit(f"❌ Failed: `{e}`")
+        await status.edit(f"❌ Failed: `{e}`")
+        return
 
-    time_taken = get_readable_time(time.time() - start)
+    total_time = get_readable_time(time.time() - start_time)
     await status.edit(
         f"✅ **Index Completed**\n\n"
-        f"⏱ Time: `{time_taken}`\n"
         f"📥 Saved: `{saved}`\n"
         f"♻️ Duplicate: `{dup}`\n"
         f"❌ Errors: `{err}`\n"
-        f"🚫 Non-media: `{nomedia}`"
+        f"🚫 Non-media: `{nomedia}`\n"
+        f"⏱ Time: `{total_time}`"
     )
 
-
-# =====================================================
+# =========================
 # STOP
-# =====================================================
+# =========================
 @Client.on_callback_query(filters.regex("^idx#cancel"))
 async def stop_index(bot, query):
     global CANCEL
     CANCEL = True
-    await query.answer("Stopping...", show_alert=True)
+    await query.answer("Stopping current job…", show_alert=True)
