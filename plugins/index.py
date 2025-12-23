@@ -15,6 +15,7 @@ from utils import get_readable_time
 # =====================================================
 LOCK = asyncio.Lock()
 CANCEL = False
+WAITING_SKIP = {}   # 🔥 FIX: skip state
 
 # =====================================================
 # RESUME DB
@@ -60,6 +61,10 @@ async def send_log(bot, text):
 async def start_index(bot, message):
     global CANCEL
 
+    # अगर skip wait चल रहा है तो ignore
+    if message.from_user.id in WAITING_SKIP:
+        return
+
     if LOCK.locked():
         return await message.reply("⏳ Indexing already running")
 
@@ -77,7 +82,7 @@ async def start_index(bot, message):
             chat_id = message.forward_from_chat.id
 
         else:
-            return  # ignore other messages
+            return
 
         chat = await bot.get_chat(chat_id)
         if chat.type != enums.ChatType.CHANNEL:
@@ -86,32 +91,52 @@ async def start_index(bot, message):
     except Exception as e:
         return await message.reply(f"❌ Error: `{e}`")
 
-    # ---- ASK SKIP ----
+    # ---- ASK SKIP (STATE SET) ----
     ask = await message.reply("⏩ Send skip message number (0 for none)")
-    try:
-        reply = await bot.wait_for_message(
-            filters.private & filters.user(message.from_user.id),
-            timeout=60
-        )
-        skip = int(reply.text)
-    except:
-        return await message.reply("❌ Skip must be a number")
-    finally:
-        try:
-            await ask.delete()
-        except:
-            pass
+    WAITING_SKIP[message.from_user.id] = {
+        "chat_id": chat_id,
+        "last_msg_id": last_msg_id,
+        "title": chat.title,
+        "ask_id": ask.id
+    }
+    return
 
-    # ---- CONFIRM ----
+# =====================================================
+# HANDLE SKIP INPUT (FIXED)
+# =====================================================
+@Client.on_message(filters.private & filters.user(ADMINS) & filters.text)
+async def handle_skip(bot, message):
+    uid = message.from_user.id
+    if uid not in WAITING_SKIP:
+        return
+
+    try:
+        skip = int(message.text)
+    except:
+        err = await message.reply("❌ Skip must be a number")
+        await asyncio.sleep(2)
+        await err.delete()
+        return
+
+    data = WAITING_SKIP.pop(uid)
+
+    try:
+        await bot.delete_messages(message.chat.id, data["ask_id"])
+    except:
+        pass
+
     btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ START", callback_data=f"idx#start#{chat_id}#{last_msg_id}#{skip}")],
+        [InlineKeyboardButton(
+            "✅ START",
+            callback_data=f"idx#start#{data['chat_id']}#{data['last_msg_id']}#{skip}"
+        )],
         [InlineKeyboardButton("❌ CANCEL", callback_data="idx#close")]
     ])
 
     await message.reply(
-        f"📢 **Channel:** `{chat.title}`\n"
-        f"🆔 **ID:** `{chat_id}`\n"
-        f"📊 **Last Message:** `{last_msg_id}`",
+        f"📢 **Channel:** `{data['title']}`\n"
+        f"🆔 **ID:** `{data['chat_id']}`\n"
+        f"📊 **Last Message:** `{data['last_msg_id']}`",
         reply_markup=btn
     )
 
@@ -171,7 +196,6 @@ async def index_worker(bot, status, chat_id, last_msg_id, skip, channel_title):
 
             processed += 1
 
-            # ---- PROGRESS + ETA ----
             if processed % 50 == 0:
                 elapsed = time.time() - start_time
                 speed = processed / elapsed if elapsed else 0
