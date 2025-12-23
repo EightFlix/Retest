@@ -223,8 +223,8 @@ async def run_channel_indexing(bot: Client, status: Message, channel_id: int, ch
     last_update = 0
     
     try:
-        # Iterate through channel history
-        async for msg in bot.get_chat_history(channel_id, limit=None):
+        # Iterate through channel history using iter_chat_history
+        async for msg in bot.iter_chat_history(channel_id):
             
             # Skip non-media messages
             if not msg.media:
@@ -268,6 +268,7 @@ async def run_channel_indexing(bot: Client, status: Message, channel_id: int, ch
                             f"❌ **Errors:** `{errors}`\n"
                             f"📊 **Total:** `{total_processed}`"
                         )
+                        await asyncio.sleep(1)  # Prevent flood
                     except (MessageNotModified, Exception):
                         pass
             
