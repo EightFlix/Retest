@@ -1,11 +1,12 @@
 import asyncio
-from hydrogram import Client, filters, enums
+from hydrogram import Client, filters
 from hydrogram.errors import (
     FloodWait,
     MessageNotModified,
     ReactionInvalid,
     ChatWriteForbidden
 )
+
 from info import INDEX_CHANNELS, LOG_CHANNEL
 from database.ia_filterdb import (
     save_file,
@@ -13,14 +14,19 @@ from database.ia_filterdb import (
     detect_quality
 )
 
+# 🔥 Import manual index cancel flag
+try:
+    from plugins.index import CANCEL_INDEX
+except:
+    CANCEL_INDEX = {}
+
 # ─────────────────────────────────────────────
-# MEDIA FILTER (VIDEO + DOCUMENT ONLY)
-# ❌ filters.edited REMOVED (Hydrogram compatible)
+# MEDIA FILTER
 # ─────────────────────────────────────────────
 media_filter = (filters.video | filters.document)
 
 # ─────────────────────────────────────────────
-# HELPER FUNCTIONS
+# HELPERS
 # ─────────────────────────────────────────────
 
 async def safe_react(message, emoji: str):
@@ -43,7 +49,6 @@ async def safe_react(message, emoji: str):
 async def safe_log(client, text: str):
     if not LOG_CHANNEL:
         return False
-
     try:
         await client.send_message(LOG_CHANNEL, text)
         return True
@@ -54,18 +59,13 @@ async def safe_log(client, text: str):
             return True
         except:
             return False
-    except ChatWriteForbidden:
-        return False
-    except Exception:
+    except (ChatWriteForbidden, Exception):
         return False
 
 
 def get_media_info(message):
-    if not message.media:
-        return None
     try:
-        media_type = message.media.value
-        media = getattr(message, media_type, None)
+        media = message.document or message.video
         if not media or not getattr(media, "file_id", None):
             return None
         return media
@@ -75,22 +75,24 @@ def get_media_info(message):
 
 def format_file_size(size_bytes: int) -> str:
     try:
-        if size_bytes < 1024:
-            return f"{size_bytes} B"
-        if size_bytes < 1024 ** 2:
-            return f"{size_bytes / 1024:.2f} KB"
-        if size_bytes < 1024 ** 3:
-            return f"{size_bytes / (1024 ** 2):.2f} MB"
-        return f"{size_bytes / (1024 ** 3):.2f} GB"
+        for unit in ["B", "KB", "MB", "GB"]:
+            if size_bytes < 1024:
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024
+        return "Unknown"
     except:
         return "Unknown"
 
 # ─────────────────────────────────────────────
-# 📥 NEW FILE INDEX
+# 📥 AUTO INDEX (LIVE POSTS ONLY)
 # ─────────────────────────────────────────────
 
 @Client.on_message(filters.chat(INDEX_CHANNELS) & media_filter, group=10)
 async def index_new_file(bot, message):
+    # 🛑 Skip if manual indexing running for this channel
+    if CANCEL_INDEX.get(message.chat.id) is False:
+        return
+
     media = get_media_info(message)
     if not media:
         return
@@ -111,20 +113,15 @@ async def index_new_file(bot, message):
 
         await safe_react(message, emoji_map.get(status, "❓"))
 
-        log_text = (
-            f"📥 **Index Event**\n\n"
-            f"📄 **File:** `{media.file_name}`\n"
-            f"📊 **Size:** `{format_file_size(file_size)}`\n"
-            f"🎞 **Quality:** `{quality}`\n"
-            f"✅ **Status:** `{status}`\n"
-            f"💬 **Chat:** {message.chat.title or 'Unknown'}\n"
-            f"🔗 **Message ID:** `{message.id}`"
+        await safe_log(
+            bot,
+            f"📥 **Auto Index**\n\n"
+            f"📄 `{media.file_name}`\n"
+            f"📊 `{format_file_size(file_size)}`\n"
+            f"🎞 `{quality}`\n"
+            f"✅ `{status}`\n"
+            f"💬 `{message.chat.title}`"
         )
-
-        if caption:
-            log_text += f"\n📝 **Caption:** `{caption[:100]}`"
-
-        await safe_log(bot, log_text)
 
     except FloodWait as e:
         await asyncio.sleep(e.value)
@@ -132,10 +129,10 @@ async def index_new_file(bot, message):
         await safe_react(message, "❌")
 
 # ─────────────────────────────────────────────
-# ✏️ CAPTION EDIT → DB UPDATE
+# ✏️ CAPTION EDIT
 # ─────────────────────────────────────────────
 
-@Client.on_edited_message(filters.chat(INDEX_CHANNELS) & (filters.video | filters.document), group=11)
+@Client.on_edited_message(filters.chat(INDEX_CHANNELS) & media_filter, group=11)
 async def update_caption(bot, message):
     media = get_media_info(message)
     if not media:
@@ -151,26 +148,7 @@ async def update_caption(bot, message):
             quality
         )
 
-        if not updated:
-            await safe_react(message, "⚠️")
-            return
-
-        await safe_react(message, "✏️")
-
-        log_text = (
-            f"✏️ **Caption Updated**\n\n"
-            f"📄 **File:** `{media.file_name}`\n"
-            f"🎞 **Quality:** `{quality}`\n"
-            f"💬 **Chat:** {message.chat.title or 'Unknown'}\n"
-            f"🔗 **Message ID:** `{message.id}`"
-        )
-
-        if new_caption:
-            log_text += f"\n📝 **New Caption:** `{new_caption[:100]}`"
-        else:
-            log_text += "\n📝 **Caption:** Removed"
-
-        await safe_log(bot, log_text)
+        await safe_react(message, "✏️" if updated else "⚠️")
 
     except MessageNotModified:
         pass
@@ -180,7 +158,7 @@ async def update_caption(bot, message):
         await safe_react(message, "❌")
 
 # ─────────────────────────────────────────────
-# 🗑️ DELETE HANDLER
+# 🗑️ DELETE LOG
 # ─────────────────────────────────────────────
 
 @Client.on_deleted_messages(filters.chat(INDEX_CHANNELS), group=12)
@@ -188,21 +166,7 @@ async def handle_deleted_files(bot, messages):
     try:
         await safe_log(
             bot,
-            f"🗑️ **Files Deleted**\n\n"
-            f"📊 Count: `{len(messages)}`\n"
-            f"ℹ️ Files remain searchable"
+            f"🗑️ **Deleted Messages**\nCount: `{len(messages)}`"
         )
     except:
         pass
-
-# ─────────────────────────────────────────────
-# CONFIG VALIDATION
-# ─────────────────────────────────────────────
-
-def validate_config():
-    if not INDEX_CHANNELS:
-        print("⚠️ INDEX_CHANNELS empty")
-    else:
-        print("✅ Index handler config OK")
-
-validate_config()
