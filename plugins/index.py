@@ -1,11 +1,10 @@
-import re
 import time
 import asyncio
 from hydrogram import Client, filters, enums
 from hydrogram.errors import FloodWait, MessageNotModified
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from info import ADMINS, INDEX_EXTENSIONS
+from info import ADMINS
 from database.ia_filterdb import save_file
 from utils import get_readable_time
 
@@ -18,26 +17,27 @@ CANCEL = False
 # =====================================================
 @Client.on_message(filters.command("index") & filters.private & filters.user(ADMINS))
 async def start_index(bot, message):
-    global CANCEL
-
     if LOCK.locked():
         return await message.reply("⏳ Previous indexing still running")
 
-    ask = await message.reply("📤 Forward **last channel message** or send **last message link**")
+    ask = await message.reply(
+        "📤 **Forward last channel message**\n"
+        "OR send **last message link**"
+    )
+
     reply = await bot.listen(message.chat.id, message.from_user.id)
     await ask.delete()
 
-    # ---------------------------------------------
-    # PARSE INPUT
-    # ---------------------------------------------
     try:
+        # ---- LINK ----
         if reply.text and reply.text.startswith("https://t.me"):
             parts = reply.text.split("/")
             last_msg_id = int(parts[-1])
             raw_chat = parts[-2]
             chat_id = int("-100" + raw_chat) if raw_chat.isdigit() else raw_chat
 
-        elif reply.forward_from_chat:
+        # ---- FORWARD ----
+        elif reply.forward_from_chat and reply.forward_from_chat.type == enums.ChatType.CHANNEL:
             last_msg_id = reply.forward_from_message_id
             chat_id = reply.forward_from_chat.id
 
@@ -51,9 +51,9 @@ async def start_index(bot, message):
     except Exception as e:
         return await message.reply(f"❌ Error: `{e}`")
 
-    # ---------------------------------------------
+    # -----------------------------
     # SKIP INPUT
-    # ---------------------------------------------
+    # -----------------------------
     ask_skip = await message.reply("⏩ Send skip message number (0 for none)")
     skip_msg = await bot.listen(message.chat.id, message.from_user.id)
     await ask_skip.delete()
@@ -63,9 +63,6 @@ async def start_index(bot, message):
     except:
         return await message.reply("❌ Invalid skip number")
 
-    # ---------------------------------------------
-    # CONFIRM
-    # ---------------------------------------------
     btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ START", callback_data=f"idx#start#{chat_id}#{last_msg_id}#{skip}")],
         [InlineKeyboardButton("❌ CANCEL", callback_data="idx#close")]
@@ -73,14 +70,14 @@ async def start_index(bot, message):
 
     await message.reply(
         f"📢 **Channel:** `{chat.title}`\n"
-        f"📊 **Total Messages:** `{last_msg_id}`\n\n"
+        f"📊 **Last Message ID:** `{last_msg_id}`\n\n"
         f"Start indexing?",
         reply_markup=btn
     )
 
 
 # =====================================================
-# CALLBACK
+# CALLBACK HANDLER
 # =====================================================
 @Client.on_callback_query(filters.regex("^idx#"))
 async def index_callback(bot, query):
@@ -105,13 +102,13 @@ async def index_callback(bot, query):
 
 
 # =====================================================
-# MAIN INDEX WORKER (🔥 PROVEN LOGIC 🔥)
+# MAIN INDEX WORKER (PROVEN LOGIC)
 # =====================================================
 async def index_worker(bot, status, chat_id, last_msg_id, skip):
     global CANCEL
 
     start = time.time()
-    saved = dup = err = deleted = nomedia = unsupported = 0
+    saved = dup = err = deleted = nomedia = 0
     current = skip
 
     try:
@@ -121,6 +118,7 @@ async def index_worker(bot, status, chat_id, last_msg_id, skip):
 
             current += 1
 
+            # ---- STATUS UPDATE ----
             if current % 30 == 0:
                 try:
                     btn = InlineKeyboardMarkup(
@@ -144,17 +142,15 @@ async def index_worker(bot, status, chat_id, last_msg_id, skip):
                 nomedia += 1
                 continue
 
-            if msg.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.DOCUMENT]:
-                unsupported += 1
+            if msg.media not in (
+                enums.MessageMediaType.VIDEO,
+                enums.MessageMediaType.DOCUMENT
+            ):
+                nomedia += 1
                 continue
 
             media = getattr(msg, msg.media.value, None)
-            if not media or not media.file_name:
-                unsupported += 1
-                continue
-
-            if not media.file_name.lower().endswith(tuple(INDEX_EXTENSIONS)):
-                unsupported += 1
+            if not media:
                 continue
 
             media.caption = msg.caption
@@ -177,7 +173,7 @@ async def index_worker(bot, status, chat_id, last_msg_id, skip):
         f"📥 Saved: `{saved}`\n"
         f"♻️ Duplicate: `{dup}`\n"
         f"❌ Errors: `{err}`\n"
-        f"🚫 Non-media: `{nomedia + unsupported}`"
+        f"🚫 Non-media: `{nomedia}`"
     )
 
 
