@@ -11,79 +11,105 @@ from utils import get_readable_time
 LOCK = asyncio.Lock()
 CANCEL = False
 
+# user_id -> state data
+INDEX_STATE = {}
+
 
 # =====================================================
 # /index COMMAND
 # =====================================================
 @Client.on_message(filters.command("index") & filters.private & filters.user(ADMINS))
 async def start_index(bot, message):
+    uid = message.from_user.id
+
     if LOCK.locked():
         return await message.reply("⏳ Previous indexing still running")
 
-    ask = await message.reply(
-        "📤 **Forward last channel message**\n"
-        "OR send **last message link**"
-    )
-
-    reply = await bot.listen(message.chat.id, message.from_user.id)
-    await ask.delete()
-
-    try:
-        # ---- LINK ----
-        if reply.text and reply.text.startswith("https://t.me"):
-            parts = reply.text.split("/")
-            last_msg_id = int(parts[-1])
-            raw_chat = parts[-2]
-            chat_id = int("-100" + raw_chat) if raw_chat.isdigit() else raw_chat
-
-        # ---- FORWARD ----
-        elif reply.forward_from_chat and reply.forward_from_chat.type == enums.ChatType.CHANNEL:
-            last_msg_id = reply.forward_from_message_id
-            chat_id = reply.forward_from_chat.id
-
-        else:
-            return await message.reply("❌ Invalid input")
-
-        chat = await bot.get_chat(chat_id)
-        if chat.type != enums.ChatType.CHANNEL:
-            return await message.reply("❌ Only channels supported")
-
-    except Exception as e:
-        return await message.reply(f"❌ Error: `{e}`")
-
-    # -----------------------------
-    # SKIP INPUT
-    # -----------------------------
-    ask_skip = await message.reply("⏩ Send skip message number (0 for none)")
-    skip_msg = await bot.listen(message.chat.id, message.from_user.id)
-    await ask_skip.delete()
-
-    try:
-        skip = int(skip_msg.text)
-    except:
-        return await message.reply("❌ Invalid skip number")
-
-    btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ START", callback_data=f"idx#start#{chat_id}#{last_msg_id}#{skip}")],
-        [InlineKeyboardButton("❌ CANCEL", callback_data="idx#close")]
-    ])
-
+    INDEX_STATE[uid] = {"step": "WAIT_LINK"}
     await message.reply(
-        f"📢 **Channel:** `{chat.title}`\n"
-        f"📊 **Last Message ID:** `{last_msg_id}`\n\n"
-        f"Start indexing?",
-        reply_markup=btn
+        "📤 **Send last channel message link**\n"
+        "OR **forward last channel message**"
     )
 
 
 # =====================================================
-# CALLBACK HANDLER
+# STEP 1: RECEIVE LINK / FORWARD
+# =====================================================
+@Client.on_message(filters.private & filters.user(ADMINS))
+async def index_flow(bot, message):
+    uid = message.from_user.id
+    state = INDEX_STATE.get(uid)
+
+    if not state:
+        return
+
+    # ---------------- WAIT LINK ----------------
+    if state["step"] == "WAIT_LINK":
+        try:
+            if message.text and message.text.startswith("https://t.me"):
+                parts = message.text.split("/")
+                last_msg_id = int(parts[-1])
+                raw_chat = parts[-2]
+                chat_id = int("-100" + raw_chat) if raw_chat.isdigit() else raw_chat
+
+            elif message.forward_from_chat and message.forward_from_chat.type == enums.ChatType.CHANNEL:
+                last_msg_id = message.forward_from_message_id
+                chat_id = message.forward_from_chat.id
+
+            else:
+                return await message.reply("❌ Send valid link or forward message")
+
+            chat = await bot.get_chat(chat_id)
+            if chat.type != enums.ChatType.CHANNEL:
+                return await message.reply("❌ Only channels supported")
+
+        except Exception as e:
+            INDEX_STATE.pop(uid, None)
+            return await message.reply(f"❌ Error: `{e}`")
+
+        INDEX_STATE[uid] = {
+            "step": "WAIT_SKIP",
+            "chat_id": chat_id,
+            "last_msg_id": last_msg_id,
+            "title": chat.title
+        }
+
+        return await message.reply("⏩ Send skip message number (0 for none)")
+
+    # ---------------- WAIT SKIP ----------------
+    if state["step"] == "WAIT_SKIP":
+        try:
+            skip = int(message.text)
+        except:
+            return await message.reply("❌ Skip must be a number")
+
+        chat_id = state["chat_id"]
+        last_msg_id = state["last_msg_id"]
+        title = state["title"]
+
+        INDEX_STATE.pop(uid, None)
+
+        btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ START", callback_data=f"idx#start#{chat_id}#{last_msg_id}#{skip}")],
+            [InlineKeyboardButton("❌ CANCEL", callback_data="idx#close")]
+        ])
+
+        return await message.reply(
+            f"📢 **Channel:** `{title}`\n"
+            f"📊 **Last Message ID:** `{last_msg_id}`\n\n"
+            f"Start indexing?",
+            reply_markup=btn
+        )
+
+
+# =====================================================
+# CALLBACK
 # =====================================================
 @Client.on_callback_query(filters.regex("^idx#"))
 async def index_callback(bot, query):
     global CANCEL
-    data = query.data.split("#")
 
+    data = query.data.split("#")
     if data[1] == "close":
         return await query.message.edit("❌ Cancelled")
 
@@ -102,7 +128,7 @@ async def index_callback(bot, query):
 
 
 # =====================================================
-# MAIN INDEX WORKER (PROVEN LOGIC)
+# MAIN INDEX WORKER (PROVEN)
 # =====================================================
 async def index_worker(bot, status, chat_id, last_msg_id, skip):
     global CANCEL
@@ -118,7 +144,6 @@ async def index_worker(bot, status, chat_id, last_msg_id, skip):
 
             current += 1
 
-            # ---- STATUS UPDATE ----
             if current % 30 == 0:
                 try:
                     btn = InlineKeyboardMarkup(
