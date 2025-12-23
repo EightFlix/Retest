@@ -178,6 +178,38 @@ class Database:
         return True
 
     # =========================
+    # ✅ FIX: BAN STATUS (MISSING METHOD)
+    # =========================
+    async def get_ban_status(self, user_id: int):
+        """
+        Used by plugins/banned.py
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            ban = await loop.run_in_executor(
+                None,
+                lambda: self.bans.find_one({"id": user_id})
+            )
+
+            if not ban:
+                return {"status": False}
+
+            # Auto-unban if expired
+            if ban.get("until", 0) <= time.time():
+                await self.unban_user(user_id)
+                return {"status": False}
+
+            return {
+                "status": True,
+                "reason": ban.get("reason", ""),
+                "until": ban.get("until")
+            }
+
+        except Exception as e:
+            print(f"[BAN_STATUS_ERROR] {e}")
+            return {"status": False}
+
+    # =========================
     # 👥 GROUPS
     # =========================
     async def add_group(self, chat_id: int, title: str):
@@ -224,4 +256,4 @@ class Database:
 # =========================
 # ✅ EXPORT
 # =========================
-db = Database() 
+db = Database()
